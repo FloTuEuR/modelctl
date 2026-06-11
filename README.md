@@ -6,7 +6,7 @@ Safe-by-default CLI for inspecting and managing local `llama.cpp` router model p
 
 ## Status
 
-Early public-ready prototype. The mutating archive path is intentionally conservative; mutating delete is not implemented.
+Early public-ready prototype. Mutating archive and delete paths are intentionally conservative and require explicit human approval.
 
 ## Requirements
 
@@ -70,9 +70,16 @@ Read [`docs/safety.md`](docs/safety.md) before using mutating commands.
 Important defaults:
 
 - `setup`, `import`, `list`, `show`, `aliases`, and `doctor` do not modify your router ini.
-- `delete` is an impact preview only; it does not delete files.
-- `archive` mutates only with `--yes`.
+- `delete --dry-run` is an impact preview only; `delete TARGET` requires an interactive terminal and typed confirmation.
+- `archive`, `rollback`, `enable`, `disable`, `add-entry`, and `scan` are dry-run by default and require `--yes` to write changes.
+- `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
 - rollback plans contain local paths and should be treated as local operational metadata.
+
+## Roadmap and recommendation rules
+
+Model acquisition and tuning features are planned but not fully implemented in v0.1. See [`docs/roadmap.md`](docs/roadmap.md) for the intended Hugging Face download, up-to-date check, benchmark, suggest settings, and hardware/config detection workflows.
+
+The current CLI exposes the command surfaces for `update-check`, `benchmark`, `add-entry`, `enable`, `disable`, and `rules` so the UX is visible before the full implementations are added. See [`docs/settings-rules.md`](docs/settings-rules.md) for the default outcomes: 20+ t/s, 65.5k good context, 128k+ ideal context, full VRAM fit, quality, and large-JSON robustness.
 
 ## Development
 

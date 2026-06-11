@@ -219,20 +219,24 @@ def augment_with_scanned_files(
 
 
 def plan_delete_model(imported: dict[str, Any], model_path: str) -> dict[str, Any]:
-    """Return a dry-run deletion impact plan; never writes or deletes anything."""
-    aliases = [a["section"] for a in imported.get("aliases", []) if a.get("model_path") == model_path]
+    """Return a deletion impact plan; does not write or delete anything."""
+    aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
+    alias_names = [a["section"] for a in aliases]
     warnings: list[str] = []
-    if len(aliases) > 1:
-        warnings.append(f"multiple aliases will be impacted: {', '.join(aliases)}")
-    elif aliases:
-        warnings.append(f"alias will be impacted: {aliases[0]}")
+    if len(alias_names) > 1:
+        warnings.append(f"multiple aliases will be impacted: {', '.join(alias_names)}")
+    elif alias_names:
+        warnings.append(f"alias will be impacted: {alias_names[0]}")
     else:
         warnings.append("no aliases currently reference this model")
 
     return {
+        "version": 1,
         "action": "delete_model",
+        "router_ini": imported.get("router_ini"),
         "model_path": model_path,
-        "aliases_impacted": aliases,
+        "aliases": aliases,
+        "aliases_impacted": alias_names,
         "files_to_delete": [model_path] if Path(model_path).exists() else [],
         "requires_confirmation": True,
         "warnings": warnings,
@@ -394,6 +398,56 @@ def _updated_ini_for_archive(original_text: str, plan: dict[str, Any]) -> str:
         if 1 <= lineno <= len(lines):
             replacements[lineno] = _commented_assignment(lines[lineno - 1], "model", destination)
     return "\n".join(replacements.get(i, line) for i, line in enumerate(lines, start=1)) + "\n"
+
+
+def _updated_ini_for_delete(original_text: str, plan: dict[str, Any]) -> str:
+    """Remove complete alias sections for aliases impacted by a delete plan."""
+    lines = original_text.splitlines()
+    remove_lines: set[int] = set()
+    for alias in plan.get("aliases", []):
+        start = alias.get("start_line")
+        end = alias.get("end_line")
+        if start and end:
+            remove_lines.update(range(int(start), int(end) + 1))
+    kept = [line for lineno, line in enumerate(lines, start=1) if lineno not in remove_lines]
+    collapsed: list[str] = []
+    for line in kept:
+        if line.strip() or (collapsed and collapsed[-1].strip()):
+            collapsed.append(line)
+    while collapsed and not collapsed[-1].strip():
+        collapsed.pop()
+    return "\n".join(collapsed) + ("\n" if collapsed else "")
+
+
+def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """Apply a confirmed delete plan: backup ini, remove aliases, delete files."""
+    if plan.get("action") != "delete_model":
+        raise ValueError("not a delete plan")
+    router_ini_value = plan.get("router_ini")
+    if not router_ini_value:
+        raise ValueError("delete plan has no router_ini")
+    router_ini = Path(router_ini_value).expanduser()
+    original_text = router_ini.read_text(encoding="utf-8")
+    applied = dict(plan)
+    applied["applied_at"] = _utc_now()
+    applied["original_ini_sha256"] = _sha256_text(original_text)
+    backup_path = router_ini.with_suffix(router_ini.suffix + ".delete.bak")
+    applied["router_ini_backup"] = str(backup_path)
+
+    _atomic_write_text(backup_path, original_text)
+    _atomic_write_text(router_ini, _updated_ini_for_delete(original_text, applied))
+    deleted_files: list[str] = []
+    try:
+        for file_path in plan.get("files_to_delete", []):
+            path = Path(file_path).expanduser()
+            if path.exists():
+                path.unlink()
+                deleted_files.append(str(path))
+        applied["deleted_files"] = deleted_files
+        return applied
+    except Exception:
+        _atomic_write_text(router_ini, original_text)
+        raise
 
 
 def apply_archive_plan(plan: dict[str, Any], plan_path: str | Path | None = None) -> dict[str, Any]:

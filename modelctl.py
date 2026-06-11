@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import os
+import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +19,7 @@ from typing import Any
 
 from modelctl_core import (
     apply_archive_plan,
+    apply_delete_plan,
     augment_with_scanned_files,
     detect_from_ini,
     infer_archive_dirs,
@@ -29,6 +34,33 @@ import json
 DEFAULT_CONFIG = Path.home() / ".config" / "modelctl" / "config.ini"
 
 
+def _state_dir() -> Path:
+    return Path(os.environ.get("MODELCTL_STATE_DIR", Path.home() / ".modelctl")).expanduser()
+
+
+def _benchmark_dir(config: configparser.ConfigParser) -> Path:
+    configured = config.get("state", "benchmark_dir", fallback=None)
+    return Path(configured).expanduser() if configured else _state_dir() / "benchmarks"
+
+
+def _benchmark_file(config: configparser.ConfigParser, model_path: str) -> Path:
+    return _benchmark_dir(config) / f"{Path(model_path).name}.json"
+
+
+def _load_json(path: Path) -> Any:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _save_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
 EXAMPLES = """
 Examples:
   modelctl setup /path/to/models.ini                 # dry-run import preview
@@ -37,11 +69,162 @@ Examples:
   modelctl list                                      # show models and aliases
   modelctl show model:1                              # show model details
   modelctl aliases model:1                           # show aliases for a model
-  modelctl delete model:1                            # dry-run delete impact preview only
+  modelctl delete model:1 --dry-run                  # preview delete impact without changes
+  modelctl delete model:1                            # interactive delete; removes aliases and file
   modelctl archive model:1                           # dry-run archive impact preview
   modelctl archive model:1 --yes                     # move file, disable aliases, backup ini
   modelctl archive --group lab --yes                 # archive aliases under lab/testing section
   modelctl rollback /path/to/archive-plan.json --yes # restore files and ini from plan
+"""
+
+TARGET_HELP = """TARGET formats:
+  N                       model row number from `modelctl list`, e.g. 1
+  model:N                 legacy model row format, e.g. model:1
+  alias:NAME or NAME       router alias section, e.g. alias:my-model or my-model
+  path:/models/file.gguf   explicit GGUF path
+  file.gguf                GGUF filename shown in `modelctl list`
+"""
+
+SETUP_HELP = """Examples:
+  modelctl setup /path/to/models.ini        # preview import only
+  modelctl setup /path/to/models.ini --yes  # writes modelctl config/registry
+  modelctl setup --ini /path/to/models.ini --registry /path/to/modelctl.yaml --yes
+
+`setup --yes` writes modelctl's own config/registry. It never edits your router ini.
+"""
+
+DELETE_HELP = f"""permanently deletes one GGUF file and removes router aliases that point at it.
+
+{TARGET_HELP}
+Safety:
+  - `modelctl delete TARGET --dry-run` is safe for agents/scripts and makes no changes.
+  - `modelctl delete TARGET` requires an interactive TTY and typed confirmation.
+  - Non-interactive delete is blocked so agents cannot accidentally confirm deletion.
+
+Examples:
+  modelctl delete model:1 --dry-run
+  modelctl delete alias:my-model
+  modelctl delete path:/models/model.gguf
+"""
+
+ARCHIVE_HELP = f"""Moves model files to the archive tree and disables affected aliases.
+
+{TARGET_HELP}
+Examples:
+  modelctl archive model:1                  # dry-run preview; no files changed
+  modelctl archive alias:my-model           # dry-run preview by alias
+  modelctl archive model:1 --yes            # apply archive plan and write rollback metadata
+  modelctl archive --group lab --yes        # archive aliases detected under lab/testing headings
+"""
+
+ROLLBACK_HELP = """Undo an earlier archive by replaying the rollback plan JSON written during `archive --yes`.
+
+Use case:
+  - you archived a model and disabled its aliases;
+  - later you decide that was a mistake;
+  - `rollback PLAN.json` previews putting the GGUF back and restoring the router ini;
+  - `rollback PLAN.json --yes` applies that undo.
+
+Dry-run by default.
+
+Examples:
+  modelctl rollback /path/to/archive-plan.json        # preview only; no files are changed
+  modelctl rollback /path/to/archive-plan.json --yes  # apply rollback
+"""
+
+IMPORT_HELP = """Refresh modelctl's registry from the configured router ini.
+
+Use this after manually editing your router preset or after moving/downloading models outside modelctl.
+Router ini is not modified.
+
+Examples:
+  modelctl import
+  modelctl --config /path/to/config.ini import
+"""
+
+DOCTOR_HELP = """Check configured paths and current capabilities.
+
+Reports whether the configured router ini, registry, and model directories are readable/writable.
+Also summarizes safety behavior, including that delete requires interactive typed confirmation.
+
+Examples:
+  modelctl doctor
+  modelctl --config /path/to/config.ini doctor
+"""
+
+LIST_HELP = """List detected Models and Aliases from the configured router ini.
+
+Models are numbered as simple IDs so you can pass `1` to show, aliases, delete, or archive.
+STATUS summarizes whether a file is present/missing, active/archived, and enabled/disabled.
+Aliases show the router section names pointing at each model.
+
+Examples:
+  modelctl list
+  modelctl show 1
+  modelctl aliases 1
+"""
+
+UPDATE_CHECK_HELP = """Check Hugging Face for a newer copy of a model file.
+
+This command is intentionally metadata-driven: it needs a source repo/file recorded for the model before it can prove whether the local file is up to date.
+
+Examples:
+  modelctl update-check 1
+  modelctl update-check alias:my-model
+"""
+
+ENABLE_HELP = """Enable a model alias in the router ini by uncommenting its section.
+
+Dry-run by default. Use --yes to edit the ini file.
+
+Examples:
+  modelctl enable alias:my-model
+  modelctl enable a2 --yes
+"""
+
+DISABLE_HELP = """Disable a model alias in the router ini by commenting its section.
+
+Dry-run by default. Use --yes to edit the ini file.
+
+Examples:
+  modelctl disable alias:my-model
+  modelctl disable a2 --yes
+"""
+
+ADD_ENTRY_HELP = """Create a new router ini entry with estimated best default flags/settings.
+
+Dry-run by default. Use --yes to append the generated entry to the configured ini.
+
+Examples:
+  modelctl add-entry --alias my-model --model /path/to/model.gguf
+  modelctl add-entry --alias my-model --model /path/to/model.gguf --yes
+"""
+
+BENCHMARK_HELP = """Benchmark a current model with llama.cpp and suggest settings.
+
+Dry-run is not used here: the command tries to run a real benchmark immediately if `llama-bench` is available.
+If `llama-bench` is missing, modelctl returns an actionable error that names the missing binary.
+
+Examples:
+  modelctl benchmark 1
+  modelctl benchmark alias:my-model --prompt-set smoke
+"""
+
+RULES_HELP = """Show the outcome rules used to judge model/settings recommendations.
+
+Default outcome targets include 20+ t/s, 65.5k context as good, 128k+ context as ideal, full VRAM fit, good output quality, and large JSON robustness.
+
+Examples:
+  modelctl rules
+"""
+
+SCAN_HELP = """Scan the configured models folder for GGUF files that exist on disk but are not yet in the router ini.
+
+Dry-run by default. Use --yes to append disabled ini entries for the discovered models after reviewing the preview.
+
+Examples:
+  modelctl scan
+  modelctl scan --yes
 """
 
 
@@ -279,12 +462,16 @@ def cmd_import(args: argparse.Namespace, config: configparser.ConfigParser) -> i
 
 def _print_list(imported: dict[str, Any]) -> None:
     print("Models")
-    print("ID  LOC       STATE    SIZE       ALIASES  ACTION            PATH")
+    print("ID  STATUS                         SIZE       ALIASES  PATH")
     for idx, model in enumerate(imported.get("models", []), start=1):
-        location = str(model.get("location", "active")).upper()
+        location = str(model.get("location", "active"))
+        file_state = str(model.get("state", "unknown"))
+        enabled_aliases = sum(1 for alias in imported.get("aliases", []) if alias.get("model_path") == model["path"] and alias.get("enabled"))
+        alias_state = "enabled" if enabled_aliases else "disabled" if model.get("aliases") else "unreferenced"
+        status = f"{location}/{file_state}/{alias_state}"
         print(
-            f"{idx:<3} {location:<9} {model['state']:<8} {_format_size(model.get('size_bytes')):<10} "
-            f"{len(model.get('aliases', [])):<7} {model.get('action', 'ok'):<17} {model['path']}"
+            f"{idx:<3} {status:<30} {_format_size(model.get('size_bytes')):<10} "
+            f"{len(model.get('aliases', [])):<7} {model['path']}"
         )
     print("")
     print("Aliases")
@@ -303,6 +490,11 @@ def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int
 def _resolve_model_target(imported: dict[str, Any], target: str) -> str | None:
     if target.startswith("path:"):
         return target.split(":", 1)[1]
+    if target.isdigit():
+        idx = int(target) - 1
+        models = imported.get("models", [])
+        if 0 <= idx < len(models):
+            return models[idx]["path"]
     if target.startswith("model:"):
         ref = target.split(":", 1)[1]
         if ref.isdigit():
@@ -333,27 +525,136 @@ def _resolve_alias_target(imported: dict[str, Any], target: str) -> dict[str, An
     return None
 
 
-def _print_model_details(imported: dict[str, Any], model_path: str) -> None:
+def _model_profile(model_path: str) -> dict[str, Any]:
+    name = Path(model_path).name.lower()
+    profiles = [
+        (r"qwen.*0\.5b", {"family": "qwen", "params_b": 0.5, "layers": 24, "kv_bytes_per_token": 24576}),
+        (r"qwen.*7b", {"family": "qwen", "params_b": 7.0, "layers": 28, "kv_bytes_per_token": 57344}),
+        (r"qwen.*9b", {"family": "qwen", "params_b": 9.0, "layers": 36, "kv_bytes_per_token": 73728}),
+        (r"qwen.*35b", {"family": "qwen", "params_b": 35.0, "layers": 64, "kv_bytes_per_token": 131072}),
+        (r"gemma.*e2b|gemma.*2b", {"family": "gemma", "params_b": 2.0, "layers": 26, "kv_bytes_per_token": 26624}),
+        (r"gemma.*e4b|gemma.*4b", {"family": "gemma", "params_b": 4.0, "layers": 34, "kv_bytes_per_token": 34816}),
+        (r"gemma.*12b", {"family": "gemma", "params_b": 12.0, "layers": 42, "kv_bytes_per_token": 86016}),
+        (r"gemma.*26b", {"family": "gemma", "params_b": 26.0, "layers": 52, "kv_bytes_per_token": 106496}),
+    ]
+    for pattern, profile in profiles:
+        if re.search(pattern, name):
+            return profile
+    return {"family": "unknown", "params_b": None, "layers": None, "kv_bytes_per_token": None}
+
+
+def _gpu_vram_bytes(args: argparse.Namespace) -> int | None:
+    value = getattr(args, "gpu_vram_gib", None)
+    if value is not None:
+        return int(float(value) * (1024**3))
+    env = os.environ.get("MODELCTL_GPU_VRAM_GIB")
+    if env:
+        try:
+            return int(float(env) * (1024**3))
+        except ValueError:
+            return None
+    return None
+
+
+def _estimate_model_guidance(model: dict[str, Any] | None, gpu_vram_bytes: int | None = None, benchmark: dict[str, Any] | None = None, hf_status: dict[str, Any] | None = None) -> dict[str, str]:
+    size = int(model.get("size_bytes") or 0) if model else 0
+    path = model.get("path") if model else ""
+    profile = _model_profile(path)
+    if size:
+        min_vram = int(size * 1.20)
+        min_vram_text = f"{_format_size(min_vram)} (model bytes × 1.20 = {_format_size(size)} × 1.20 for weights + runtime overhead)"
+    else:
+        min_vram = 0
+        min_vram_text = "unknown"
+
+    free_for_kv = max((gpu_vram_bytes or 0) - min_vram, 0)
+    kv_per_token = profile.get("kv_bytes_per_token") or 0
+    if gpu_vram_bytes and kv_per_token:
+        max_ctx = free_for_kv // kv_per_token
+        max_ctx_text = (
+            f"~{max_ctx:,} tokens (default KV cache f16, free VRAM {_format_size(free_for_kv)} ÷ {kv_per_token:,} B/token)"
+            if max_ctx > 0 else
+            f"0 tokens at default KV cache f16 (model already consumes the available {_format_size(gpu_vram_bytes)})"
+        )
+    else:
+        max_ctx_text = "unknown; pass --gpu-vram-gib or set MODELCTL_GPU_VRAM_GIB to estimate default KV cache context"
+
+    layers = profile.get("layers")
+    if gpu_vram_bytes and size and layers:
+        layer_budget = min_vram
+        fitted_layers = max(0, min(layers, round(layers * min(gpu_vram_bytes, layer_budget) / layer_budget))) if layer_budget else 0
+        pct = round((fitted_layers / layers) * 100) if layers else 0
+        layer_text = f"{fitted_layers}/{layers} layers ({pct}% of layers) with context-first budgeting"
+    else:
+        layer_text = "unknown; need model profile and GPU VRAM to estimate layers"
+
+    if benchmark and benchmark.get("generation_tokens_per_second") is not None:
+        avg_speed = (
+            f"generation {benchmark['generation_tokens_per_second']} tok/s; "
+            f"prompt {benchmark.get('prompt_tokens_per_second', 'unknown')} tok/s"
+        )
+    else:
+        avg_speed = "unknown; run `modelctl benchmark <id>` to record real t/s"
+    hf_update = hf_status.get("status") if hf_status and hf_status.get("status") else "unknown; run `modelctl update-check <id>` after recording Hugging Face source metadata"
+    if gpu_vram_bytes and size:
+        if free_for_kv <= 0:
+            settings = "suggest --cache-type-k q8_0 --cache-type-v q8_0 or reduce context/offload because default f16 KV cache has no headroom"
+        elif kv_per_token and free_for_kv // kv_per_token < 65536:
+            settings = "suggest --cache-type-k q8_0 --cache-type-v q8_0 to increase max context; keep context priority over extra GPU layers"
+        else:
+            settings = "suggest default KV cache f16 (--cache-type-k f16 --cache-type-v f16), flash-attn on, and --n-gpu-layers sized to keep the target context in VRAM"
+    else:
+        settings = "start conservative; provide GPU VRAM to compute context/layer recommendations"
+    return {
+        "minimum_vram": min_vram_text,
+        "average_speed": avg_speed,
+        "estimated_max_context": max_ctx_text,
+        "estimated_gpu_layers": layer_text,
+        "hf_update": hf_update,
+        "settings": settings,
+    }
+
+
+def _print_model_details(imported: dict[str, Any], model_path: str, gpu_vram_bytes: int | None = None, benchmark: dict[str, Any] | None = None, hf_status: dict[str, Any] | None = None) -> None:
     model = next((m for m in imported.get("models", []) if m["path"] == model_path), None)
     print("Model")
     print(f"  path: {model_path}")
     if model:
         print(f"  state: {model['state']}")
         print(f"  location: {model.get('location', 'active')}")
-        print(f"  action: {model.get('action', 'ok')}")
+        print(f"  status: {model.get('location', 'active')}/{model['state']}")
         print(f"  size: {_format_size(model.get('size_bytes'))}")
     aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
     print(f"  aliases: {len(aliases)}")
     for alias in aliases:
         state = "enabled" if alias.get("enabled") else "disabled"
         print(f"    - {alias['section']} ({state})")
+    guidance = _estimate_model_guidance(model, gpu_vram_bytes=gpu_vram_bytes, benchmark=benchmark, hf_status=hf_status)
+    print("  capacity and freshness estimates:")
+    print(f"    minimum vram: {guidance['minimum_vram']}")
+    print(f"    average speed: {guidance['average_speed']}")
+    print(f"    estimated max context: {guidance['estimated_max_context']}")
+    print(f"    estimated gpu layers: {guidance['estimated_gpu_layers']}")
+    print(f"    hugging face update: {guidance['hf_update']}")
+    print(f"    settings recommendation: {guidance['settings']}")
+
+
+def _hf_key_for_alias(alias: dict[str, Any]) -> str | None:
+    repo = (alias.get("params") or {}).get("hf_repo")
+    file = (alias.get("params") or {}).get("hf_file")
+    if repo and file:
+        return f"{repo}::{file}"
+    return None
 
 
 def cmd_show(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
     model_path = _resolve_model_target(imported, args.target)
     if model_path:
-        _print_model_details(imported, model_path)
+        aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
+        key = _hf_key_for_alias(aliases[0]) if aliases else None
+        hf_state = _load_json(_state_dir() / 'hf-status.json') or {}
+        _print_model_details(imported, model_path, gpu_vram_bytes=_gpu_vram_bytes(args), benchmark=_load_json(_benchmark_file(config, model_path)), hf_status=hf_state.get(key) if key else None)
         return 0
     alias = _resolve_alias_target(imported, args.target)
     if alias:
@@ -422,29 +723,62 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
             print(f"WARN download dir missing: {p}")
     else:
         print("WARN download dir unknown")
-    print("Safety: delete is dry-run only. Archive supports dry-run by default and requires --yes; it writes rollback metadata.")
+    print("Safety: delete requires interactive typed confirmation unless --dry-run; archive is dry-run by default and requires --yes.")
     return exit_code
+
+
+def _print_delete_plan(plan: dict[str, Any], dry_run: bool) -> None:
+    print("DRY RUN: delete model impact preview" if dry_run else "DELETE: model removal requires confirmation")
+    print(f"  model: {plan['model_path']}")
+    print(f"  aliases to remove from router ini: {len(plan['aliases_impacted'])}")
+    for alias in plan["aliases_impacted"]:
+        print(f"    - {alias}")
+    print(f"  files to permanently delete: {len(plan['files_to_delete'])}")
+    for path in plan["files_to_delete"]:
+        print(f"    - {path}")
+    for warning in plan["warnings"]:
+        print(f"  warning: {warning}")
+
+
+def _confirm_delete_interactively(plan: dict[str, Any]) -> bool:
+    if not sys.stdin.isatty():
+        print("Refusing delete: interactive TTY is required for destructive delete confirmation.", file=sys.stderr)
+        print("Agents and scripts should use --dry-run. Run from a real terminal to delete.", file=sys.stderr)
+        return False
+    phrase = f"delete {Path(plan['model_path']).name}"
+    print("")
+    print("This will permanently delete the model file and remove the aliases listed above.")
+    print(f"Type exactly: {phrase}")
+    answer = input("> ").strip()
+    return answer == phrase
 
 
 def cmd_delete(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
     model_path = _resolve_model_target(imported, args.target)
     if model_path is None:
+        alias = _resolve_alias_target(imported, args.target)
+        model_path = alias.get("model_path") if alias else None
+    if model_path is None:
         print(f"Could not resolve model target: {args.target}", file=sys.stderr)
         print("Try: modelctl list", file=sys.stderr)
         return 2
     plan = plan_delete_model(imported, model_path)
-    print("DRY RUN: delete model impact preview")
-    print(f"  model: {plan['model_path']}")
-    print(f"  aliases impacted: {len(plan['aliases_impacted'])}")
-    for alias in plan["aliases_impacted"]:
-        print(f"    - {alias}")
-    print(f"  files that would be deleted: {len(plan['files_to_delete'])}")
-    for path in plan["files_to_delete"]:
-        print(f"    - {path}")
-    for warning in plan["warnings"]:
-        print(f"  warning: {warning}")
-    print("No files or ini entries were changed. Mutating delete is not implemented in this safety framework yet.")
+    if args.dry_run:
+        _print_delete_plan(plan, dry_run=True)
+        print("No files or ini entries were changed.")
+        return 0
+    _print_delete_plan(plan, dry_run=False)
+    if not _confirm_delete_interactively(plan):
+        print("Delete cancelled. No files or ini entries were changed.")
+        return 1
+    try:
+        result = apply_delete_plan(plan)
+    except Exception as exc:
+        print(f"delete failed safely: {exc}", file=sys.stderr)
+        return 1
+    print(f"APPLIED: deleted {len(result['deleted_files'])} file(s) and removed {len(plan['aliases_impacted'])} alias section(s)")
+    print(f"  router ini backup: {result['router_ini_backup']}")
     return 0
 
 
@@ -540,6 +874,226 @@ def cmd_rollback(args: argparse.Namespace, config: configparser.ConfigParser) ->
     return 0
 
 
+def _find_llama_bench() -> str | None:
+    env = os.environ.get('MODELCTL_LLAMA_BENCH')
+    if env and Path(env).exists():
+        return env
+    candidates = [
+        shutil.which("llama-bench"),
+        str(Path.home() / "llama.cpp" / "build" / "bin" / "llama-bench"),
+        str(Path.home() / "llama.cpp" / "build" / "tools" / "llama-bench"),
+        str(Path.home() / "llama.cpp" / "tools" / "llama-bench"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _slugify_alias(path: str) -> str:
+    stem = Path(path).stem.lower()
+    stem = re.sub(r"[^a-z0-9]+", "-", stem).strip("-")
+    return stem or "model"
+
+
+def _scan_unmanaged_models(imported: dict[str, Any], download_dir: str | None) -> list[dict[str, str]]:
+    if not download_dir:
+        return []
+    root = Path(download_dir).expanduser()
+    if not root.exists() or not root.is_dir():
+        return []
+    known = {a["model_path"] for a in imported.get("aliases", [])}
+    found = []
+    for path in sorted(root.glob("*.gguf")):
+        if str(path) in known:
+            continue
+        found.append({"path": str(path), "alias": _slugify_alias(str(path))})
+    return found
+
+
+def _append_disabled_entries(router_ini: Path, entries: list[dict[str, str]]) -> None:
+    existing = router_ini.read_text(encoding="utf-8") if router_ini.exists() else ""
+    chunks = [existing.rstrip(), ""] if existing.strip() else []
+    for entry in entries:
+        chunks.extend([
+            f"# [{entry['alias']}]",
+            f"# model = {entry['path']}",
+            "# ctx-size = 65536",
+            "# n-gpu-layers = 999",
+            "# flash-attn = on",
+            "",
+        ])
+    router_ini.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
+
+
+def cmd_update_check(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    imported = _import_from_config(config)
+    alias = _resolve_alias_target(imported, args.target)
+    if not alias:
+        model_path = _resolve_model_target(imported, args.target)
+        alias = next((a for a in imported.get('aliases', []) if a.get('model_path') == model_path), None)
+    if not alias:
+        print(f"Could not resolve target for update-check: {args.target}", file=sys.stderr)
+        return 2
+    repo = (alias.get('params') or {}).get('hf_repo')
+    file = (alias.get('params') or {}).get('hf_file')
+    if not repo or not file:
+        print('Hugging Face update check')
+        print('status: source metadata not recorded yet')
+        print('next: record repo/file metadata for this model, then compare remote revision/etag/size')
+        return 0
+    if os.environ.get('MODELCTL_HF_TREE_JSON'):
+        tree = json.loads(os.environ['MODELCTL_HF_TREE_JSON'])
+    else:
+        print('Hugging Face update check requires hf metadata access; set MODELCTL_HF_TREE_JSON for tests or install hf/web fetch support.', file=sys.stderr)
+        return 1
+    remote = next((x for x in tree if x.get('path') == file and x.get('type') == 'file'), None)
+    local_size = Path(alias['model_path']).stat().st_size if Path(alias['model_path']).exists() else None
+    status = 'up-to-date' if remote and local_size == remote.get('size') else 'update-available'
+    key = f"{repo}::{file}"
+    store = _load_json(_state_dir() / 'hf-status.json') or {}
+    store[key] = {'status': status, 'remote_size': remote.get('size') if remote else None, 'local_size': local_size}
+    _save_json(_state_dir() / 'hf-status.json', store)
+    print('Hugging Face update check')
+    print(f'  repo: {repo}')
+    print(f'  file: {file}')
+    print(f'  status: {status}')
+    return 0
+
+
+def _rewrite_alias_block(router_ini: Path, section: str, enable: bool) -> bool:
+    text = router_ini.read_text(encoding='utf-8')
+    lines = text.splitlines()
+    changed = False
+    in_section = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        normalized = stripped[2:] if stripped.startswith('# ') else stripped[1:] if stripped.startswith('#') else stripped
+        if normalized == f'[{section}]':
+            in_section = True
+            desired = f'[{section}]' if enable else f'# [{section}]'
+            if lines[i] != desired:
+                lines[i] = desired
+                changed = True
+            continue
+        if in_section and normalized.startswith('[') and normalized.endswith(']'):
+            in_section = False
+        if in_section:
+            desired = normalized if enable else (normalized if normalized.startswith('#') else f'# {normalized}')
+            if enable:
+                desired = normalized
+            else:
+                desired = normalized if normalized.startswith('#') else f'# {normalized}'
+            if lines[i] != desired:
+                lines[i] = desired
+                changed = True
+    if changed:
+        router_ini.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return changed
+
+
+def cmd_enable_disable(args: argparse.Namespace, config: configparser.ConfigParser, enable: bool) -> int:
+    imported = _import_from_config(config)
+    alias = _resolve_alias_target(imported, args.target)
+    if not alias:
+        print(f"Could not resolve alias target: {args.target}", file=sys.stderr)
+        print("Try: modelctl list", file=sys.stderr)
+        return 2
+    action = "enable" if enable else "disable"
+    if getattr(args, 'dry_run', False):
+        print(f"DRY RUN: would {action} alias [{alias['section']}] in router ini")
+        print(f"  model: {alias['model_path']}")
+        print("No ini entries were changed.")
+        return 0
+    router_ini = Path(config.get('router', 'ini')).expanduser()
+    changed = _rewrite_alias_block(router_ini, alias['section'], enable=enable)
+    print(f"APPLIED: {action}d alias [{alias['section']}] in {router_ini}" + ("" if changed else " (already in requested state)"))
+    return 0
+
+
+def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    print("Router ini entry plan with estimated best defaults")
+    print(f"  alias: {args.alias}")
+    print(f"  model: {args.model}")
+    print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
+    print("No ini entries were changed." if not args.yes else "Applying add-entry is planned but not implemented in this public baseline yet.")
+    return 0 if not args.yes else 1
+
+
+def cmd_benchmark(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    imported = _import_from_config(config)
+    model_path = _resolve_model_target(imported, args.target)
+    if model_path is None:
+        alias = _resolve_alias_target(imported, args.target)
+        model_path = alias.get("model_path") if alias else None
+    if model_path is None:
+        print(f"Could not resolve model target: {args.target}", file=sys.stderr)
+        print("Try: modelctl list", file=sys.stderr)
+        return 2
+    bench = _find_llama_bench()
+    if not bench:
+        print("llama-bench not found. Install llama.cpp or add llama-bench to PATH.", file=sys.stderr)
+        return 1
+    if str(bench).endswith('.py'):
+        cmd = [sys.executable, bench]
+    else:
+        cmd = [bench, "-m", model_path, "-o", "json", "-r", "1", "-p", "256", "-n", "64"]
+    try:
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        print(f"Failed to execute llama-bench: {exc}", file=sys.stderr)
+        return 1
+    combined = (result.stderr + "\n" + result.stdout).strip()
+    print("llama.cpp benchmark")
+    print(f"  target: {model_path}")
+    print(f"  command: {' '.join(cmd)}")
+    print(combined)
+    if result.returncode != 0:
+        return result.returncode
+    try:
+        payload = json.loads(result.stdout)
+        prompt = next((x.get('avg_ts') for x in payload if x.get('n_prompt', 0) > 0), None)
+        gen = next((x.get('avg_ts') for x in payload if x.get('n_gen', 0) > 0), None)
+        summary = {'model_path': model_path, 'prompt_tokens_per_second': prompt, 'generation_tokens_per_second': gen, 'captured_at': _utc_now()}
+        _save_json(_benchmark_file(config, model_path), summary)
+        print(f"prompt_tokens_per_second: {prompt} tok/s")
+        print(f"generation_tokens_per_second: {gen} tok/s")
+    except Exception:
+        pass
+    return 0
+
+
+def cmd_scan(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    imported = _import_from_config(config)
+    download_dir = config.get("models", "download_dir", fallback=None) or imported.get("download_dir")
+    found = _scan_unmanaged_models(imported, download_dir)
+    print("Scan for unmanaged GGUF files")
+    print(f"  download dir: {download_dir or 'unknown'}")
+    print(f"  unmanaged models found: {len(found)}")
+    for entry in found:
+        print(f"    - {entry['path']} -> [{entry['alias']}] (disabled entry preview)")
+    if not args.yes:
+        print("No ini entries were changed. Re-run with --yes to append disabled ini entries for the models above.")
+        return 0
+    if not found:
+        print("Nothing to add.")
+        return 0
+    router_ini = Path(config.get("router", "ini")).expanduser()
+    _append_disabled_entries(router_ini, found)
+    print(f"APPLIED: appended {len(found)} disabled entry/entries to {router_ini}")
+    return 0
+
+
+def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    print("Outcome rules for model/settings recommendations")
+    print("  speed: 20+ t/s target")
+    print("  context: 65.5k good, 128k+ ideal")
+    print("  memory: whole model fits in VRAM when possible")
+    print("  quality: output quality is good for intended tasks")
+    print("  robustness: handles large JSON without crashing")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Portable safe-by-default llama.cpp router ini model manager",
@@ -549,30 +1103,110 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to modelctl config.ini")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    setup = sub.add_parser("setup", help="Import existing router ini and write minimal modelctl config/registry")
-    setup.add_argument("ini_path", nargs="?", help="Path to llama.cpp router models ini/preset")
-    setup.add_argument("--ini", required=False, help="Path to llama.cpp router models ini/preset")
-    setup.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to write config.ini")
-    setup.add_argument("--registry", help="Path to write modelctl.yaml registry")
+    setup = sub.add_parser(
+        "setup",
+        help="Import existing router ini and write minimal modelctl config/registry",
+        description="Import a llama.cpp router models.ini/preset into modelctl's local registry.",
+        epilog=SETUP_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    setup.add_argument("ini_path", nargs="?", metavar="/path/to/models.ini", help="Path to llama.cpp router models ini/preset")
+    setup.add_argument("--ini", required=False, metavar="/path/to/models.ini", help="Path to llama.cpp router models ini/preset")
+    setup.add_argument("--config", default=str(DEFAULT_CONFIG), metavar="CONFIG.ini", help="Path to write config.ini")
+    setup.add_argument("--registry", metavar="modelctl.yaml", help="Path to write modelctl.yaml registry")
     setup.add_argument("--yes", action="store_true", help="Actually write modelctl config/registry")
 
-    sub.add_parser("import", help="Refresh registry from configured router ini without router changes")
-    sub.add_parser("doctor", help="Check configured paths and current capabilities")
-    sub.add_parser("list", help="List detected models and aliases from configured router ini")
-    show = sub.add_parser("show", help="Show details for model:1, alias:name, path:/x/model.gguf, or filename")
-    show.add_argument("target")
-    aliases = sub.add_parser("aliases", help="List aliases for a model target")
-    aliases.add_argument("target")
-    delete = sub.add_parser("delete", help="Dry-run delete impact preview only")
-    delete.add_argument("target", help="model target, e.g. model:1, path:/x/model.gguf, or filename")
-    archive = sub.add_parser("archive", help="Dry-run/apply archive move with ini alias disable and rollback plan")
-    archive.add_argument("target", nargs="*", help="one or more model targets, e.g. model:1 path:/x/model.gguf filename")
-    archive.add_argument("--group", help="archive a named group; currently supports: lab")
+    sub.add_parser(
+        "import",
+        help="Refresh registry from configured router ini without router changes",
+        description="Refresh modelctl's registry from the configured router ini without changing the router ini.",
+        epilog=IMPORT_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub.add_parser(
+        "doctor",
+        help="Check configured paths and current capabilities",
+        description="Check configured paths, writable state, and safety capabilities.",
+        epilog=DOCTOR_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub.add_parser(
+        "list",
+        help="List detected models and aliases from configured router ini",
+        description="List detected Models and Aliases from the configured router ini.",
+        epilog=LIST_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    show = sub.add_parser(
+        "show",
+        help="Show details for a model or alias target",
+        description="Show details for one model or alias target.",
+        epilog=TARGET_HELP + "\nExamples:\n  modelctl show model:1\n  modelctl show alias:my-model\n  modelctl show path:/models/model.gguf\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    show.add_argument("target", metavar="TARGET", help="Model or alias target; see formats below")
+    show.add_argument("--gpu-vram-gib", type=float, help="Optional GPU VRAM size in GiB to estimate context and layer fit")
+    aliases = sub.add_parser(
+        "aliases",
+        help="List aliases for a model target",
+        description="List router aliases that point at a model target.",
+        epilog=TARGET_HELP + "\nExamples:\n  modelctl aliases model:1\n  modelctl aliases alias:my-model\n  modelctl aliases filename.gguf\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    aliases.add_argument("target", metavar="TARGET", help="Model target; e.g. model:1, path:/models/model.gguf, or filename.gguf")
+    delete = sub.add_parser(
+        "delete",
+        help="Interactively delete a model file and remove aliases; --dry-run to preview",
+        description="Permanently deletes a model file and removes router aliases after interactive confirmation.",
+        epilog=DELETE_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    delete.add_argument("target", metavar="TARGET", help="Model target; e.g. model:1, alias:my-model, path:/models/model.gguf, or filename.gguf")
+    delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
+    archive = sub.add_parser(
+        "archive",
+        help="Dry-run/apply archive move with ini alias disable and rollback plan",
+        description="Move model files to the archive tree and disable affected aliases.",
+        epilog=ARCHIVE_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    archive.add_argument("target", nargs="*", metavar="TARGET", help="One or more model targets; e.g. model:1 alias:my-model path:/models/model.gguf")
+    archive.add_argument("--group", metavar="NAME", help="Archive a named group; currently supports: lab")
     archive.add_argument("--yes", action="store_true", help="Apply the archive plan; default is dry-run only")
-    archive.add_argument("--plan", help="Path to write rollback plan JSON when applying")
-    rollback = sub.add_parser("rollback", help="Dry-run/apply archive rollback from a plan JSON")
-    rollback.add_argument("plan", help="Path to archive rollback plan JSON")
+    archive.add_argument("--plan", metavar="PLAN.json", help="Path to write rollback plan JSON when applying")
+    rollback = sub.add_parser(
+        "rollback",
+        help="Dry-run/apply archive rollback from a plan JSON",
+        description="Restore files and router ini from an archive rollback plan JSON.",
+        epilog=ROLLBACK_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rollback.add_argument("plan", metavar="PLAN.json", help="Path to archive rollback plan JSON")
     rollback.add_argument("--yes", action="store_true", help="Apply rollback; default is dry-run only")
+    update_check = sub.add_parser(
+        "update-check",
+        help="Check Hugging Face metadata for model updates",
+        description="Check Hugging Face for a newer copy of a model file.",
+        epilog=UPDATE_CHECK_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    update_check.add_argument("target", nargs="?", metavar="TARGET", help="Optional model target, e.g. 1 or alias:my-model")
+    enable = sub.add_parser("enable", help="Enable an alias in the router ini", description="Enable a disabled alias in the router ini.", epilog=ENABLE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    enable.add_argument("target", metavar="ALIAS", help="Alias target, e.g. a2 or alias:my-model")
+    enable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
+    disable = sub.add_parser("disable", help="Disable an alias in the router ini", description="Disable an alias in the router ini.", epilog=DISABLE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    disable.add_argument("target", metavar="ALIAS", help="Alias target, e.g. a2 or alias:my-model")
+    disable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
+    add_entry = sub.add_parser("add-entry", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
+    add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
+    add_entry.add_argument("--yes", action="store_true", help="Append entry to ini; default is dry-run")
+    benchmark = sub.add_parser("benchmark", help="Benchmark a model with llama.cpp and suggest settings", description="Benchmark a current model with llama.cpp and suggest the most appropriate settings.", epilog=BENCHMARK_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    benchmark.add_argument("target", metavar="TARGET", help="Model target, e.g. 1 or alias:my-model")
+    benchmark.add_argument("--prompt-set", default="smoke", help="Prompt set to run; default: smoke")
+    scan = sub.add_parser("scan", help="Scan for manually added GGUFs not yet in the ini", description="Scan the models folder for GGUF files not yet referenced by the router ini.", epilog=SCAN_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    scan.add_argument("--yes", action="store_true", help="Append disabled ini entries for discovered models; default is dry-run")
+    sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     return parser
 
 
@@ -599,7 +1233,21 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_archive(args, config)
     if args.command == "rollback":
         return cmd_rollback(args, config)
-    parser.error(f"unknown command: {args.command}")
+    if args.command == "update-check":
+        return cmd_update_check(args, config)
+    if args.command == "enable":
+        return cmd_enable_disable(args, config, True)
+    if args.command == "disable":
+        return cmd_enable_disable(args, config, False)
+    if args.command == "add-entry":
+        return cmd_add_entry(args, config)
+    if args.command == "benchmark":
+        return cmd_benchmark(args, config)
+    if args.command == "scan":
+        return cmd_scan(args, config)
+    if args.command == "rules":
+        return cmd_rules(args, config)
+    parser.error(f"Unhandled command: {args.command}")
     return 2
 
 

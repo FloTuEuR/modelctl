@@ -12,7 +12,7 @@ These commands are read-only with respect to the router ini and model files:
 - `list`
 - `show`
 - `aliases`
-- `delete`
+- `delete --dry-run`
 - `archive` without `--yes`
 - `rollback` without `--yes`
 
@@ -21,8 +21,19 @@ These commands are read-only with respect to the router ini and model files:
 Only these paths intentionally mutate files:
 
 - `setup --yes`: writes modelctl's own config and registry only; it does not edit the router ini.
+- `delete TARGET`: requires an interactive terminal and typed confirmation; removes impacted alias sections and permanently deletes the selected model file.
 - `archive ... --yes`: edits the router ini, writes an ini backup, moves model files, and writes rollback metadata.
 - `rollback ... --yes`: moves archived files back and restores the router ini from backup metadata.
+
+## Delete safeguards
+
+Delete apply currently requires:
+
+- an interactive TTY; non-interactive stdin is refused;
+- typed confirmation matching the selected model filename;
+- a router ini backup;
+- atomic text writes for ini and backup files;
+- `--dry-run` for agents/scripts that need to inspect impact without mutation.
 
 ## Archive safeguards
 
@@ -45,7 +56,7 @@ Archive apply currently requires:
 
 ## Not implemented yet
 
-- Mutating delete.
 - Router live-model blocking via `/v1/models`.
 - User-configurable grouping/tag rules beyond the initial `--group lab` helper.
 - Optional checksum verification for very large cross-device moves.
+- Hugging Face download/update, benchmarking, and settings recommendation workflows; see `roadmap.md`.

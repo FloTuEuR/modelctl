@@ -89,7 +89,7 @@ ctx-size = 8192
 
             listing = self.run_modelctl("--config", str(config), "list")
             self.assertEqual(listing.returncode, 0, listing.stderr + listing.stdout)
-            self.assertIn("ARCHIVED", listing.stdout)
+            self.assertIn("archived", listing.stdout)
             self.assertIn(str(dest), listing.stdout)
 
             rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path), "--yes")

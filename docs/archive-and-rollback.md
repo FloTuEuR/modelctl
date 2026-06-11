@@ -1,28 +1,37 @@
 # Archive and rollback
 
-## Preview
+## Archive: what it is for
+
+Use `archive` when you want to get a model out of the active models folder without losing the ability to restore it later.
+
+Typical use case:
+
+1. a model is taking disk space or should no longer be active;
+2. you want the GGUF moved into the archive tree;
+3. you want any router aliases for that model disabled, not deleted;
+4. you want a machine-readable undo file written at the same time.
+
+## Archive preview
 
 ```bash
-modelctl archive model:1
+modelctl archive 1
 modelctl archive alias:example
 modelctl archive path:/path/to/example.gguf
 ```
 
 No files are changed during preview.
 
-## Apply
+## Archive apply
 
 ```bash
-modelctl archive model:1 --yes
+modelctl archive 1 --yes
 ```
 
 Optional explicit plan path:
 
 ```bash
-modelctl archive model:1 --yes --plan ./archive-plan.json
+modelctl archive 1 --yes --plan ./archive-plan.json
 ```
-
-## What apply changes
 
 For each selected model, `archive --yes`:
 
@@ -32,15 +41,25 @@ For each selected model, `archive --yes`:
 4. moves the GGUF into the archive tree;
 5. writes a rollback plan JSON.
 
-## Rollback
+## Rollback: what it is for
 
-Preview:
+Use `rollback` to undo a previous `archive --yes`.
+
+That rollback plan JSON is the receipt for the archive action. It records enough information to:
+
+- move the GGUF back to its original location;
+- restore the router ini state from before the archive;
+- do that safely in preview mode first.
+
+## Rollback preview
 
 ```bash
 modelctl rollback ./archive-plan.json
 ```
 
-Apply:
+This shows what would be restored. No files are changed.
+
+## Rollback apply
 
 ```bash
 modelctl rollback ./archive-plan.json --yes

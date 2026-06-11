@@ -20,7 +20,7 @@ class ArchiveAndActionListTests(unittest.TestCase):
             check=False,
         )
 
-    def test_list_includes_archive_models_and_action_column(self):
+    def test_list_includes_archive_models_and_status_column(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             models = root / "models"
@@ -50,14 +50,12 @@ ctx-size = 4096
             result = self.run_modelctl("--config", str(config), "list")
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-            self.assertIn("ACTION", result.stdout)
-            self.assertIn("ACTIVE", result.stdout)
-            self.assertIn("ARCHIVED", result.stdout)
+            self.assertIn("STATUS", result.stdout)
+            self.assertIn("active", result.stdout)
+            self.assertIn("archived", result.stdout)
             self.assertIn(str(active), result.stdout)
             self.assertIn(str(unused), result.stdout)
             self.assertIn(str(archived), result.stdout)
-            self.assertIn("ok", result.stdout)
-            self.assertIn("could archive", result.stdout)
             self.assertIn("archived", result.stdout)
 
     def test_show_archived_model_explains_it_is_not_active(self):
@@ -82,7 +80,7 @@ ctx-size = 4096
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn(str(archived), result.stdout)
             self.assertIn("location: archived", result.stdout)
-            self.assertIn("action: archived", result.stdout)
+            self.assertIn("status: archived/present", result.stdout)
             self.assertIn("aliases: 0", result.stdout)
 
 

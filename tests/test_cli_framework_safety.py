@@ -91,7 +91,7 @@ ctx-size = 8192
             self.assertIn("models.beta", listing.stdout)
             self.assertIn("disabled.gamma", listing.stdout)
 
-            delete_plan = self.run_modelctl("--config", str(config), "delete", f"path:{shared}")
+            delete_plan = self.run_modelctl("--config", str(config), "delete", f"path:{shared}", "--dry-run")
             self.assertEqual(delete_plan.returncode, 0, delete_plan.stderr + delete_plan.stdout)
             self.assertIn("DRY RUN", delete_plan.stdout)
             self.assertIn("multiple aliases", delete_plan.stdout)
