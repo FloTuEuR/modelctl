@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llama-modelctl"
+version = "0.1.0"
+description = "Safe-by-default llama.cpp router model manager"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Florian"}]
+keywords = ["llama.cpp", "gguf", "models", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Utilities",
+]
+
+[project.scripts]
+modelctl = "modelctl:main"
+
+[tool.setuptools]
+py-modules = ["modelctl", "modelctl_core"]

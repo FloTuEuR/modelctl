@@ -1,0 +1,29 @@
+# Bytecode/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtualenv/build
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Local operational state
+modelctl.yaml
+config.ini
+plans/
+*.bak
+*.tmp
+*.json
+
+# Private deployment notes/prompts; never publish
+private/
+
+# Local-only security scan helpers; never publish
+scripts/
+
+private/
