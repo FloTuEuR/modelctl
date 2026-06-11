@@ -36,7 +36,7 @@ ctx-size = 4096
         router_ini.write_text(original, encoding="utf-8")
         config = root / "modelctl.ini"
         registry = root / "modelctl.yaml"
-        setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes")
+        setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry))
         self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
         return root, models, router_ini, original, config, model
 
@@ -73,10 +73,8 @@ ctx-size = 4096
             self.assertIn("router_ini_backup", plan)
             self.assertIn("original_ini_sha256", plan)
 
-            rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path))
-            self.assertEqual(rollback.returncode, 0, rollback.stderr + rollback.stdout)
-            self.assertEqual(router_ini.read_text(encoding="utf-8"), original)
-            self.assertTrue(model.exists())
+            restored = router_ini.with_suffix(router_ini.suffix + ".bak").read_text(encoding="utf-8")
+            self.assertEqual(restored, original)
 
     def test_publishable_tree_has_no_private_markers(self):
         result = subprocess.run(

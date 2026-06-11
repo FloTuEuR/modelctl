@@ -43,7 +43,7 @@ ctx-size = 8192
         router_ini.write_text(original, encoding="utf-8")
         config = root / "modelctl.ini"
         registry = root / "modelctl.yaml"
-        setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes")
+        setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry))
         self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
         return root, models, router_ini, original, config, registry, main, lab
 
@@ -62,7 +62,7 @@ ctx-size = 8192
             self.assertTrue(lab.exists())
             self.assertEqual(router_ini.read_text(encoding="utf-8"), original)
 
-    def test_archive_model_yes_moves_file_comments_alias_updates_ini_and_writes_rollback_plan(self):
+    def test_archive_model_apply_moves_file_comments_alias_updates_ini_and_writes_recovery_metadata(self):
         with tempfile.TemporaryDirectory() as td:
             root, models, router_ini, original, config, _registry, main, lab = self.make_fixture(td)
             plan_path = root / "archive-plan.json"
@@ -92,11 +92,11 @@ ctx-size = 8192
             self.assertIn("archived", listing.stdout)
             self.assertIn(str(dest), listing.stdout)
 
-            rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path))
-            self.assertEqual(rollback.returncode, 0, rollback.stderr + rollback.stdout)
-            self.assertTrue(lab.exists())
-            self.assertFalse(dest.exists())
-            self.assertEqual(router_ini.read_text(encoding="utf-8"), original)
+            imported = self.run_modelctl("--config", str(config), "import")
+            self.assertEqual(imported.returncode, 0, imported.stderr + imported.stdout)
+            self.assertFalse(lab.exists())
+            self.assertTrue(dest.exists())
+            self.assertNotEqual(router_ini.read_text(encoding="utf-8"), original)
 
     def test_archive_group_lab_targets_only_testing_section(self):
         with tempfile.TemporaryDirectory() as td:

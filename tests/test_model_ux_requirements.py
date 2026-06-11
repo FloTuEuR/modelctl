@@ -42,7 +42,7 @@ ctx-size = 4096
         )
         config = root / "modelctl.ini"
         registry = root / "modelctl.yaml"
-        setup = self.run_modelctl("setup", str(ini), "--config", str(config), "--registry", str(registry), "--yes")
+        setup = self.run_modelctl("setup", str(ini), "--config", str(config), "--registry", str(registry))
         self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
         return root, models, active, inactive, ini, config
 

@@ -44,7 +44,7 @@ ctx-size = 4096
             config = root / "modelctl.ini"
             registry = root / "modelctl.yaml"
 
-            setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes")
+            setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), )
             self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
 
             result = self.run_modelctl("--config", str(config), "list")
@@ -72,7 +72,7 @@ ctx-size = 4096
             router_ini.write_text(f"[active]\nmodel = {active}\n", encoding="utf-8")
             config = root / "modelctl.ini"
             registry = root / "modelctl.yaml"
-            setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes")
+            setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), )
             self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
 
             result = self.run_modelctl("--config", str(config), "show", archived.name)

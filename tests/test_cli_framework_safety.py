@@ -59,7 +59,6 @@ ctx-size = 8192
                 str(config),
                 "--registry",
                 str(registry),
-                "--yes",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -81,7 +80,7 @@ ctx-size = 8192
             config = root / "modelctl.ini"
             registry = root / "modelctl.yaml"
             setup = self.run_modelctl(
-                "setup", "--ini", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes"
+                "setup", "--ini", str(router_ini), "--config", str(config), "--registry", str(registry)
             )
             self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
 

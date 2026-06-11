@@ -26,7 +26,6 @@ from modelctl_core import (
     lab_model_paths,
     plan_archive_models,
     plan_delete_model,
-    rollback_archive_plan,
 )
 import json
 
@@ -64,33 +63,34 @@ def _save_json(path: Path, payload: Any) -> None:
 EXAMPLES = """
 Examples:
   modelctl setup /path/to/models.ini                 # dry-run import preview
-  modelctl setup /path/to/models.ini --yes           # write modelctl config/registry only
+  modelctl setup                                      # launch setup wizard
   modelctl doctor                                    # check configured setup
   modelctl list                                      # show models and aliases
-  modelctl show model:1                              # show model details
-  modelctl aliases model:1                           # show aliases for a model
-  modelctl delete model:1 --dry-run                  # preview delete impact without changes
-  modelctl delete model:1                            # interactive delete; removes aliases and file
-  modelctl archive model:1                           # move file, disable aliases, backup ini
-  modelctl archive model:1 --dry-run                 # preview archive impact
+  modelctl show 1                                    # show model details
+  modelctl aliases 1                                 # show aliases for a model
+  modelctl delete 1 --dry-run                        # preview delete impact without changes
+  modelctl delete 1                                  # interactive delete; removes aliases and file
+  modelctl archive 1                                 # move file and disable aliases
+  modelctl archive 1 --dry-run                       # preview archive impact
   modelctl archive --group lab                       # archive aliases under lab/testing section
-  modelctl rollback /path/to/archive-plan.json       # restore files and ini from plan
 """
 
 TARGET_HELP = """TARGET formats:
   N                       model row number from `modelctl list`, e.g. 1
-  model:N                 legacy model row format, e.g. model:1
   alias:NAME or NAME       router alias section, e.g. alias:my-model or my-model
   path:/models/file.gguf   explicit GGUF path
   file.gguf                GGUF filename shown in `modelctl list`
 """
 
-SETUP_HELP = """Examples:
-  modelctl setup /path/to/models.ini        # preview import only
-  modelctl setup /path/to/models.ini --yes  # writes modelctl config/registry
-  modelctl setup --ini /path/to/models.ini --registry /path/to/modelctl.yaml --yes
+SETUP_HELP = """Import an existing llama.cpp router models.ini/preset into modelctl's local config + registry.
 
-`setup --yes` writes modelctl's own config/registry. It never edits your router ini.
+Ways to run:
+  modelctl setup                       # guided wizard; prompts for ini path and writes config/registry
+  modelctl setup /path/to/models.ini   # direct path for non-interactive/scripted setup
+  modelctl setup --ini /path/to/models.ini --registry /path/to/modelctl.yaml
+
+Safety:
+`setup` writes modelctl's own config/registry. It never edits your router ini.
 """
 
 DELETE_HELP = f"""permanently deletes one GGUF file and removes router aliases that point at it.
@@ -102,7 +102,7 @@ Safety:
   - Non-interactive delete is blocked so agents cannot accidentally confirm deletion.
 
 Examples:
-  modelctl delete model:1 --dry-run
+  modelctl delete 1 --dry-run
   modelctl delete alias:my-model
   modelctl delete path:/models/model.gguf
 """
@@ -111,25 +111,10 @@ ARCHIVE_HELP = f"""Moves model files to the archive tree and disables affected a
 
 {TARGET_HELP}
 Examples:
-  modelctl archive model:1                  # apply archive plan and write rollback metadata
-  modelctl archive alias:my-model           # archive by alias
-  modelctl archive model:1 --dry-run        # preview without changing files
-  modelctl archive --group lab              # archive aliases detected under lab/testing headings
-"""
-
-ROLLBACK_HELP = """Undo an earlier archive by replaying the rollback plan JSON written during `archive`.
-
-Use case:
-  - you archived a model and disabled its aliases;
-  - later you decide that was a mistake;
-  - `rollback PLAN.json --dry-run` previews putting the GGUF back and restoring the router ini;
-  - `rollback PLAN.json` applies that undo.
-
-Use `--dry-run` when you want a preview instead of applying immediately.
-
-Examples:
-  modelctl rollback /path/to/archive-plan.json        # preview only; no files are changed
-  modelctl rollback /path/to/archive-plan.json         # apply rollback
+  modelctl archive 1                       # archive by model row number
+  modelctl archive alias:my-model          # archive by alias
+  modelctl archive 1 --dry-run             # preview without changing files
+  modelctl archive --group lab             # archive aliases detected under lab/testing headings
 """
 
 IMPORT_HELP = """Refresh modelctl's registry from the configured router ini.
@@ -328,7 +313,7 @@ def load_config(path: Path) -> configparser.ConfigParser:
         raise SystemExit(
             f"Config not found: {path}\n"
             f"Run: modelctl setup\n"
-            f"Or, non-interactively: modelctl setup /path/to/models.ini --config {path} --yes"
+            f"Or give a direct path once: modelctl setup /path/to/models.ini --config {path}"
         )
     config = configparser.ConfigParser()
     config.read(path, encoding="utf-8")
@@ -404,12 +389,11 @@ def _wizard_router_ini() -> Path | None:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     router_ini = _router_ini_from_setup_args(args)
-    wizard_mode = router_ini is None
-    if wizard_mode:
+    if router_ini is None:
         router_ini = _wizard_router_ini()
     if router_ini is None:
         print("setup needs a router ini path.", file=sys.stderr)
-        print("Example: modelctl setup /path/to/models.ini", file=sys.stderr)
+        print("Example: modelctl setup", file=sys.stderr)
         return 2
     if not router_ini.exists():
         print(f"router ini not found: {router_ini}", file=sys.stderr)
@@ -431,16 +415,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(f"  archive_dirs: {', '.join(imported.get('archive_dirs', [])) or 'none detected'}")
     print(f"  config: {config_path}")
     print(f"  registry: {registry_path}")
-
-    should_write = args.yes
-    if wizard_mode and not should_write:
-        should_write = _yes_no_prompt("Write modelctl config/registry so modelctl is ready to use?", default=True)
-
-    if not should_write:
-        print("\nDry-run only. No files were written.")
-        print("Next:")
-        print("  modelctl setup --yes")
-        return 0
 
     write_config(config_path, router_ini, registry_path, imported.get("download_dir"), imported.get("archive_dirs", []))
     write_registry_yaml(registry_path, imported)
@@ -723,7 +697,7 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
             print(f"WARN download dir missing: {p}")
     else:
         print("WARN download dir unknown")
-    print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/rollback/apply commands accept --dry-run previews when you want smoke-test behavior.")
+    print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/apply commands accept --dry-run previews when you want smoke-test behavior.")
     return exit_code
 
 
@@ -848,29 +822,7 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
         print(f"archive failed safely: {exc}", file=sys.stderr)
         return 1
     _print_archive_plan(applied, dry_run=False)
-    print(f"  rollback plan: {plan_path}")
-    print("Archive applied. Router ini backup and rollback metadata were written.")
-    return 0
-
-
-def cmd_rollback(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
-    plan_path = Path(args.plan).expanduser()
-    if not plan_path.exists():
-        print(f"rollback plan not found: {plan_path}", file=sys.stderr)
-        return 2
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    if getattr(args, 'dry_run', False):
-        print("DRY RUN: archive rollback preview")
-        print(f"  router ini: {plan.get('router_ini')}")
-        print(f"  files to restore: {len(plan.get('moved') or plan.get('entries') or [])}")
-        print("No files or ini entries were changed. Re-run without --dry-run to apply rollback.")
-        return 0
-    try:
-        result = rollback_archive_plan(plan)
-    except Exception as exc:
-        print(f"rollback failed safely: {exc}", file=sys.stderr)
-        return 1
-    print(f"APPLIED: rollback restored {result['files']} file(s) and router ini {result['router_ini']}")
+    print("Archive applied. Router ini backup and recovery metadata were written.")
     return 0
 
 
@@ -1128,7 +1080,6 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--ini", required=False, metavar="/path/to/models.ini", help="Path to llama.cpp router models ini/preset")
     setup.add_argument("--config", default=str(DEFAULT_CONFIG), metavar="CONFIG.ini", help="Path to write config.ini")
     setup.add_argument("--registry", metavar="modelctl.yaml", help="Path to write modelctl.yaml registry")
-    setup.add_argument("--yes", action="store_true", help="Actually write modelctl config/registry")
 
     sub.add_parser(
         "import",
@@ -1155,7 +1106,7 @@ def build_parser() -> argparse.ArgumentParser:
         "show",
         help="Show details for a model or alias target",
         description="Show details for one model or alias target.",
-        epilog=TARGET_HELP + "\nExamples:\n  modelctl show model:1\n  modelctl show alias:my-model\n  modelctl show path:/models/model.gguf\n",
+        epilog=TARGET_HELP + "\nExamples:\n  modelctl show 1\n  modelctl show alias:my-model\n  modelctl show path:/models/model.gguf\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     show.add_argument("target", metavar="TARGET", help="Model or alias target; see formats below")
@@ -1164,10 +1115,10 @@ def build_parser() -> argparse.ArgumentParser:
         "aliases",
         help="List aliases for a model target",
         description="List router aliases that point at a model target.",
-        epilog=TARGET_HELP + "\nExamples:\n  modelctl aliases model:1\n  modelctl aliases alias:my-model\n  modelctl aliases filename.gguf\n",
+        epilog=TARGET_HELP + "\nExamples:\n  modelctl aliases 1\n  modelctl aliases alias:my-model\n  modelctl aliases filename.gguf\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    aliases.add_argument("target", metavar="TARGET", help="Model target; e.g. model:1, path:/models/model.gguf, or filename.gguf")
+    aliases.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, path:/models/model.gguf, or filename.gguf")
     delete = sub.add_parser(
         "delete",
         help="Interactively delete a model file and remove aliases; --dry-run to preview",
@@ -1175,30 +1126,19 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=DELETE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    delete.add_argument("target", metavar="TARGET", help="Model target; e.g. model:1, alias:my-model, path:/models/model.gguf, or filename.gguf")
+    delete.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, alias:my-model, path:/models/model.gguf, or filename.gguf")
     delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
     archive = sub.add_parser(
         "archive",
-        help="Archive model files, disable aliases, and write rollback metadata",
+        help="Archive model files and disable aliases",
         description="Move model files to the archive tree and disable affected aliases.",
         epilog=ARCHIVE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    archive.add_argument("target", nargs="*", metavar="TARGET", help="One or more model targets; e.g. model:1 alias:my-model path:/models/model.gguf")
+    archive.add_argument("target", nargs="*", metavar="TARGET", help="One or more model targets; e.g. 1 alias:my-model path:/models/model.gguf")
     archive.add_argument("--group", metavar="NAME", help="Archive a named group; currently supports: lab")
     archive.add_argument("--dry-run", action="store_true", help="Preview the archive plan without changing anything")
-    archive.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
-    archive.add_argument("--plan", metavar="PLAN.json", help="Path to write rollback plan JSON when applying")
-    rollback = sub.add_parser(
-        "rollback",
-        help="Rollback a prior archive operation from a plan JSON",
-        description="Restore files and router ini from an archive rollback plan JSON.",
-        epilog=ROLLBACK_HELP,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    rollback.add_argument("plan", metavar="PLAN.json", help="Path to archive rollback plan JSON")
-    rollback.add_argument("--dry-run", action="store_true", help="Preview rollback without changing anything")
-    rollback.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
+    archive.add_argument("--plan", metavar="PLAN.json", help="Optional path to write recovery metadata JSON")
     update_check = sub.add_parser(
         "update-check",
         help="Check Hugging Face metadata for model updates",
@@ -1217,13 +1157,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
     add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
     add_entry.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
-    add_entry.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     benchmark = sub.add_parser("benchmark", help="Benchmark a model with llama.cpp and suggest settings", description="Benchmark a current model with llama.cpp and suggest the most appropriate settings.", epilog=BENCHMARK_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     benchmark.add_argument("target", metavar="TARGET", help="Model target, e.g. 1 or alias:my-model")
     benchmark.add_argument("--prompt-set", default="smoke", help="Prompt set to run; default: smoke")
     scan = sub.add_parser("scan", help="Scan for manually added GGUFs not yet in the ini", description="Scan the models folder for GGUF files not yet referenced by the router ini.", epilog=SCAN_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     scan.add_argument("--dry-run", action="store_true", help="Preview discovered entries without appending anything")
-    scan.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     return parser
 
@@ -1249,8 +1187,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_delete(args, config)
     if args.command == "archive":
         return cmd_archive(args, config)
-    if args.command == "rollback":
-        return cmd_rollback(args, config)
     if args.command == "update-check":
         return cmd_update_check(args, config)
     if args.command == "enable":

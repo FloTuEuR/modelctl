@@ -48,20 +48,20 @@ ctx-size = 8192
             check=False,
         )
 
-    def test_setup_accepts_positional_ini_and_prints_next_steps_without_writing_by_default(self):
+    def test_setup_with_direct_path_writes_config_without_extra_confirmation(self):
         with tempfile.TemporaryDirectory() as td:
             root, router_ini, _shared, _solo = self.make_fixture(td)
             config = root / "modelctl.ini"
 
-            result = self.run_modelctl("setup", str(router_ini), "--config", str(config))
+            registry = root / "modelctl.yaml"
+            result = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry))
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("aliases: 3", result.stdout)
             self.assertIn("Next:", result.stdout)
-            self.assertIn("modelctl setup", result.stdout)
-            self.assertIn("--yes", result.stdout)
-            self.assertNotIn("--config", result.stdout)
-            self.assertFalse(config.exists())
+            self.assertIn("Setup written safely", result.stdout)
+            self.assertTrue(config.exists())
+            self.assertTrue(registry.exists())
 
     def test_setup_without_path_runs_wizard_and_writes_config_after_confirmation(self):
         with tempfile.TemporaryDirectory() as td:
@@ -80,7 +80,6 @@ ctx-size = 8192
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("Path to llama.cpp router models.ini", result.stdout)
-            self.assertIn("Write modelctl config/registry", result.stdout)
             self.assertIn("Setup written safely", result.stdout)
             self.assertIn("Next:", result.stdout)
             self.assertIn("modelctl doctor", result.stdout)
@@ -95,7 +94,7 @@ ctx-size = 8192
             config = root / "modelctl.ini"
             registry = root / "modelctl.yaml"
             setup = self.run_modelctl(
-                "setup", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes"
+                "setup", str(router_ini), "--config", str(config), "--registry", str(registry)
             )
             self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
 
@@ -105,13 +104,13 @@ ctx-size = 8192
             self.assertIn("OK aliases detected: 3", doctor.stdout)
             self.assertIn("OK registry writable", doctor.stdout)
 
-            show = self.run_modelctl("--config", str(config), "show", "model:1")
+            show = self.run_modelctl("--config", str(config), "show", "1")
             self.assertEqual(show.returncode, 0, show.stderr + show.stdout)
             self.assertIn(str(shared), show.stdout)
             self.assertIn("alpha", show.stdout)
             self.assertIn("models.beta", show.stdout)
 
-            aliases = self.run_modelctl("--config", str(config), "aliases", "model:1")
+            aliases = self.run_modelctl("--config", str(config), "aliases", "1")
             self.assertEqual(aliases.returncode, 0, aliases.stderr + aliases.stdout)
             self.assertIn("alpha", aliases.stdout)
             self.assertIn("models.beta", aliases.stdout)

@@ -1,4 +1,4 @@
-# Archive and rollback
+# Archive
 
 ## Archive: what it is for
 
@@ -29,7 +29,7 @@ For each selected model, `archive`:
 2. comments aliases that referenced the model;
 3. updates the commented `model = ...` line to the archive destination;
 4. moves the GGUF into the archive tree;
-5. writes a rollback plan JSON.
+5. writes a manual recovery plan JSON.
 
 ## Archive preview
 
@@ -43,9 +43,9 @@ No files are changed during preview.
 
 ## Rollback: what it is for
 
-Use `rollback` to undo a previous `archive`.
+Use `manual recovery` to undo a previous `archive`.
 
-That rollback plan JSON is the receipt for the archive action. It records enough information to:
+That manual recovery plan JSON is the receipt for the archive action. It records enough information to:
 
 - move the GGUF back to its original location;
 - restore the router ini state from before the archive;
@@ -54,13 +54,13 @@ That rollback plan JSON is the receipt for the archive action. It records enough
 ## Rollback apply
 
 ```bash
-modelctl rollback ./archive-plan.json
+modelctl manual recovery ./archive-plan.json
 ```
 
 ## Rollback preview
 
 ```bash
-modelctl rollback ./archive-plan.json --dry-run
+modelctl manual recovery ./archive-plan.json --dry-run
 ```
 
 This shows what would be restored. No files are changed.

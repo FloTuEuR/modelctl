@@ -2,7 +2,7 @@
 
 Safe-by-default CLI for inspecting and managing local `llama.cpp` router model preset files.
 
-`llama-modelctl` imports an existing router `models.ini`/preset, lists aliases and GGUF files, previews risky actions, archives models with rollback metadata, and avoids destructive changes unless explicitly confirmed.
+`llama-modelctl` imports an existing router `models.ini`/preset, lists aliases and GGUF files, previews risky actions, archives models with manual recovery metadata, and avoids destructive changes unless explicitly confirmed.
 
 ## Status
 
@@ -20,7 +20,7 @@ No third-party Python dependencies are required for the core CLI.
 ```bash
 git clone https://github.com/FloTuEuR/modelctl.git
 cd modelctl
-python3 modelctl.py setup /path/to/models.ini --yes
+python3 modelctl.py setup
 python3 modelctl.py doctor
 python3 modelctl.py list
 ```
@@ -28,7 +28,7 @@ python3 modelctl.py list
 Or use the portable launcher from a checkout:
 
 ```bash
-./modelctl setup /path/to/models.ini --yes
+./modelctl setup
 ./modelctl list
 ```
 
@@ -37,7 +37,7 @@ Or use the portable launcher from a checkout:
 Apply directly:
 
 ```bash
-modelctl archive model:1
+modelctl archive 1
 modelctl archive alias:my-model
 modelctl archive path:/path/to/model.gguf
 ```
@@ -45,7 +45,7 @@ modelctl archive path:/path/to/model.gguf
 Preview without mutating anything:
 
 ```bash
-modelctl archive model:1 --dry-run
+modelctl archive 1 --dry-run
 ```
 
 The archive command:
@@ -54,13 +54,13 @@ The archive command:
 - accepts `--dry-run` when you want a smoke-test preview first;
 - creates an ini backup next to the router preset;
 - comments impacted aliases instead of deleting them;
-- writes a rollback plan JSON under the configured modelctl plans directory unless `--plan` is provided.
+- writes a manual recovery plan JSON under the configured modelctl plans directory unless `--plan` is provided.
 
 Rollback also applies by default and supports preview mode:
 
 ```bash
-modelctl rollback ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json
-modelctl rollback ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json --dry-run
+modelctl manual recovery ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json
+modelctl manual recovery ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json --dry-run
 ```
 
 ## Safety notes
@@ -71,10 +71,10 @@ Important defaults:
 
 - `setup`, `import`, `list`, `show`, `aliases`, and `doctor` do not modify your router ini.
 - `delete --dry-run` is an impact preview only; `delete TARGET` requires an interactive terminal and typed confirmation.
-- `archive`, `rollback`, `enable`, `disable`, `add-entry`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
+- `archive`, `manual recovery`, `enable`, `disable`, `add-entry`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
 - `delete --dry-run` is the special preview-only delete path; plain `delete TARGET` still requires interactive typed confirmation.
 - `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
-- rollback plans contain local paths and should be treated as local operational metadata.
+- manual recovery plans contain local paths and should be treated as local operational metadata.
 
 ## Roadmap and recommendation rules
 

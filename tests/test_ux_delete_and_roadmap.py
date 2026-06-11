@@ -44,18 +44,17 @@ ctx-size = 4096
         router_ini.write_text(original, encoding="utf-8")
         config = root / "modelctl.ini"
         registry = root / "modelctl.yaml"
-        setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry), "--yes")
+        setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry))
         self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
         return root, models, router_ini, original, config, doomed, keeper
 
     def test_subcommand_help_explains_targets_and_examples(self):
         expected = {
-            "aliases": ["TARGET", "model:1", "alias:my-model", "filename.gguf"],
-            "show": ["TARGET", "model:1", "alias:my-model", "path:/models/model.gguf"],
-            "delete": ["permanently deletes", "interactive confirmation", "--dry-run", "model:1"],
-            "archive": ["dry-run", "alias:my-model", "--group lab", "rollback metadata"],
-            "rollback": ["PLAN.json", "--dry-run", "no files are changed"],
-            "setup": ["/path/to/models.ini", "--registry", "writes modelctl config"],
+            "aliases": ["TARGET", "1", "alias:my-model", "filename.gguf"],
+            "show": ["TARGET", "1", "alias:my-model", "path:/models/model.gguf"],
+            "delete": ["permanently deletes", "interactive confirmation", "--dry-run", "1"],
+            "archive": ["dry-run", "alias:my-model", "--group lab", "recovery metadata"],
+            "setup": ["/path/to/models.ini", "--registry", "writes config/registry"],
             "import": ["Refresh", "modelctl import", "Router ini is not modified"],
             "doctor": ["configured paths", "modelctl doctor", "delete requires interactive"],
             "list": ["Models", "Aliases", "modelctl list"],

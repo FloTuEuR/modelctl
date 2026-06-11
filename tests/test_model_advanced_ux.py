@@ -40,7 +40,7 @@ ctx-size = 4096
         )
         config = root / "modelctl.ini"
         registry = root / "modelctl.yaml"
-        setup = self.run_modelctl("setup", str(ini), "--config", str(config), "--registry", str(registry), "--yes")
+        setup = self.run_modelctl("setup", str(ini), "--config", str(config), "--registry", str(registry))
         self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
         return root, models, active, manual, ini, config
 
@@ -87,14 +87,6 @@ ctx-size = 4096
             text = ini.read_text(encoding="utf-8")
             self.assertIn(str(manual), text)
             self.assertIn("[gemma-4-e4b-it-q4-0]", text.lower())
-
-    def test_rollback_help_explains_use_case(self):
-        result = self.run_modelctl("rollback", "-h")
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        combined = result.stdout.lower()
-        self.assertIn("undo an earlier archive", combined)
-        self.assertIn("plan json", combined)
-        self.assertIn("--dry-run", combined)
 
 
 if __name__ == "__main__":

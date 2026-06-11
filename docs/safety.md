@@ -6,7 +6,7 @@
 
 These commands are read-only with respect to the router ini and model files:
 
-- `setup` without `--yes`
+- `setup`
 - `import`
 - `doctor`
 - `list`
@@ -14,7 +14,6 @@ These commands are read-only with respect to the router ini and model files:
 - `aliases`
 - `delete --dry-run`
 - `archive --dry-run`
-- `rollback --dry-run`
 - `enable --dry-run`
 - `disable --dry-run`
 - `add-entry --dry-run`
@@ -24,10 +23,9 @@ These commands are read-only with respect to the router ini and model files:
 
 Only these paths intentionally mutate files:
 
-- `setup --yes`: writes modelctl's own config and registry only; it does not edit the router ini.
+- `setup`: writes modelctl's own config and registry only; it does not edit the router ini.
 - `delete TARGET`: requires an interactive terminal and typed confirmation; removes impacted alias sections and permanently deletes the selected model file.
-- `archive ...`: edits the router ini, writes an ini backup, moves model files, and writes rollback metadata unless `--dry-run` is used.
-- `rollback ...`: moves archived files back and restores the router ini from backup metadata unless `--dry-run` is used.
+- `archive ...`: edits the router ini, writes an ini backup, moves model files, and writes recovery metadata unless `--dry-run` is used.
 - `enable TARGET`: edits the router ini to uncomment/restore an alias section unless `--dry-run` is used.
 - `disable TARGET`: edits the router ini to comment out an alias section unless `--dry-run` is used.
 - `add-entry`: appends a generated ini entry unless `--dry-run` is used.
@@ -50,9 +48,9 @@ Archive apply currently requires:
 - existing source files;
 - non-existing destinations;
 - a router ini backup;
-- rollback plan metadata;
+- recovery metadata;
 - atomic text writes for ini, backup, and plan files;
-- rollback backup hash verification when available.
+- backup hash verification when available.
 
 ## Operational cautions
 
