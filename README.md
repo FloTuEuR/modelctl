@@ -2,11 +2,11 @@
 
 Safe-by-default CLI for inspecting and managing local `llama.cpp` router model preset files.
 
-`llama-modelctl` imports an existing router `models.ini`/preset, lists aliases and GGUF files, previews risky actions, archives models with manual recovery metadata, and avoids destructive changes unless explicitly confirmed.
+`llama-modelctl` imports an existing router `models.ini`/preset, lists aliases and GGUF files, previews risky actions, archives models with recovery metadata, and avoids destructive changes unless explicitly confirmed.
 
 ## Status
 
-Early public-ready prototype. Mutating archive and delete paths are intentionally conservative and require explicit human approval.
+Early public-ready prototype. Archive and delete paths are intentionally conservative.
 
 ## Requirements
 
@@ -54,14 +54,7 @@ The archive command:
 - accepts `--dry-run` when you want a smoke-test preview first;
 - creates an ini backup next to the router preset;
 - comments impacted aliases instead of deleting them;
-- writes a manual recovery plan JSON under the configured modelctl plans directory unless `--plan` is provided.
-
-Rollback also applies by default and supports preview mode:
-
-```bash
-modelctl manual recovery ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json
-modelctl manual recovery ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json --dry-run
-```
+- writes a recovery plan JSON under the configured modelctl plans directory unless `--plan` is provided.
 
 ## Safety notes
 
@@ -71,10 +64,9 @@ Important defaults:
 
 - `setup`, `import`, `list`, `show`, `aliases`, and `doctor` do not modify your router ini.
 - `delete --dry-run` is an impact preview only; `delete TARGET` requires an interactive terminal and typed confirmation.
-- `archive`, `manual recovery`, `enable`, `disable`, `add-entry`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
-- `delete --dry-run` is the special preview-only delete path; plain `delete TARGET` still requires interactive typed confirmation.
+- `archive`, `enable`, `disable`, `add-entry`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
 - `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
-- manual recovery plans contain local paths and should be treated as local operational metadata.
+- Recovery plan JSON files contain local paths and should be treated as local operational metadata.
 
 ## Roadmap and recommendation rules
 
@@ -95,7 +87,6 @@ Run tests:
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/check_private_markers.py
 ```
 
 ## License

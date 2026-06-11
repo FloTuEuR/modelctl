@@ -22,3 +22,6 @@ plans/
 
 # Private deployment notes/prompts; never publish
 private/
+
+# Local-only security scan helpers; never publish
+scripts/

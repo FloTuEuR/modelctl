@@ -2,18 +2,77 @@ import json
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "modelctl.py"
+PRIVATE_MARKERS = [
+    "flori",
+    "/home/flori",
+    "C:\\Users\\flori",
+    "192.168",
+    "localai",
+    "buster",
+    "Buster",
+    "/mnt/windows-ssd",
+]
 
 
 class ProductionReadinessTests(unittest.TestCase):
     def run_modelctl(self, *args):
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def run_private_marker_scan(self):
+        scan_code = textwrap.dedent(
+            """
+            from pathlib import Path
+            import sys
+
+            ROOT = Path(sys.argv[1])
+            PRIVATE_MARKERS = sys.argv[2:]
+            SKIP_DIRS = {'.git', '.github', '__pycache__', '.pytest_cache', '.venv', 'venv', 'private'}
+            SCAN_SUFFIXES = {'.py', '.md', '.txt', '.toml', '.yml', '.yaml', '.ini', ''}
+            SKIP_FILES = {Path('tests/test_production_readiness.py')}
+
+            def should_scan(path: Path) -> bool:
+                rel = path.relative_to(ROOT)
+                if rel in SKIP_FILES:
+                    return False
+                if any(part in SKIP_DIRS for part in rel.parts):
+                    return False
+                return path.is_file() and path.suffix in SCAN_SUFFIXES
+
+            hits = []
+            for path in ROOT.rglob('*'):
+                if not should_scan(path):
+                    continue
+                try:
+                    text = path.read_text(encoding='utf-8')
+                except UnicodeDecodeError:
+                    continue
+                for lineno, line in enumerate(text.splitlines(), start=1):
+                    for marker in PRIVATE_MARKERS:
+                        if marker in line:
+                            hits.append(f'{path.relative_to(ROOT)}:{lineno}: contains private marker {marker!r}')
+            if hits:
+                print('Private marker scan failed:', file=sys.stderr)
+                print('\\n'.join(hits), file=sys.stderr)
+                raise SystemExit(1)
+            print('Private marker scan passed.')
+            """
+        )
+        return subprocess.run(
+            [sys.executable, "-c", scan_code, str(ROOT), *PRIVATE_MARKERS],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -77,14 +136,7 @@ ctx-size = 4096
             self.assertEqual(restored, original)
 
     def test_publishable_tree_has_no_private_markers(self):
-        result = subprocess.run(
-            [sys.executable, "scripts/check_private_markers.py"],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        result = self.run_private_marker_scan()
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
 
