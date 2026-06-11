@@ -18,8 +18,8 @@ No third-party Python dependencies are required for the core CLI.
 ## Quick start
 
 ```bash
-git clone https://github.com/YOUR-USER/llama-modelctl.git
-cd llama-modelctl
+git clone https://github.com/FloTuEuR/modelctl.git
+cd modelctl
 python3 modelctl.py setup /path/to/models.ini --yes
 python3 modelctl.py doctor
 python3 modelctl.py list
@@ -71,15 +71,24 @@ Important defaults:
 
 - `setup`, `import`, `list`, `show`, `aliases`, and `doctor` do not modify your router ini.
 - `delete --dry-run` is an impact preview only; `delete TARGET` requires an interactive terminal and typed confirmation.
-- `archive`, `rollback`, `enable`, `disable`, `add-entry`, and `scan` are dry-run by default and require `--yes` to write changes.
+- `archive`, `rollback`, and `delete --dry-run` are preview-first workflows.
+- `enable`, `disable`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
+- `add-entry` still previews by default and requires `--yes` to write changes.
 - `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
 - rollback plans contain local paths and should be treated as local operational metadata.
 
 ## Roadmap and recommendation rules
 
-Model acquisition and tuning features are planned but not fully implemented in v0.1. See [`docs/roadmap.md`](docs/roadmap.md) for the intended Hugging Face download, up-to-date check, benchmark, suggest settings, and hardware/config detection workflows.
+Model acquisition and tuning features are still only partially implemented in v0.1. See [`docs/roadmap.md`](docs/roadmap.md) for what is still planned versus what now works.
 
-The current CLI exposes the command surfaces for `update-check`, `benchmark`, `add-entry`, `enable`, `disable`, and `rules` so the UX is visible before the full implementations are added. See [`docs/settings-rules.md`](docs/settings-rules.md) for the default outcomes: 20+ t/s, 65.5k good context, 128k+ ideal context, full VRAM fit, quality, and large-JSON robustness.
+Today:
+
+- `benchmark TARGET` runs a real `llama-bench` invocation when available and persists results for later display in `show`.
+- `update-check TARGET` can persist Hugging Face freshness state when source repo/file metadata is known.
+- `enable` / `disable` apply real ini edits by default, with `--dry-run` available for preview.
+- `add-entry` and richer settings recommendation flows are still roadmap features.
+
+See [`docs/settings-rules.md`](docs/settings-rules.md) for the current recommendation/output targets: 20+ t/s, 65.5k good context, 128k+ ideal context, full VRAM fit, quality, and large-JSON robustness.
 
 ## Development
 

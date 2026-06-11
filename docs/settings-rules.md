@@ -16,11 +16,11 @@ The rules are deliberately simple and human-readable so users can tune them late
 
 ## Current implementation status
 
-- `modelctl show TARGET` displays placeholders for minimum VRAM, average speed, estimated max context, estimated GPU layers, Hugging Face update state, and settings recommendation.
-- `modelctl benchmark TARGET` is a discoverable command surface that describes the benchmark plan. Full llama.cpp benchmark execution is still planned.
-- `modelctl update-check TARGET` is a discoverable command surface. Full Hugging Face freshness checks need source repo/file metadata to be stored with a model.
+- `modelctl show TARGET` displays placeholders and/or persisted values for minimum VRAM, average speed, estimated max context, estimated GPU layers, Hugging Face update state, and settings recommendation.
+- `modelctl benchmark TARGET` runs a real `llama-bench` invocation when available and persists summary throughput for later display.
+- `modelctl update-check TARGET` can persist a Hugging Face freshness record when source repo/file metadata is known.
 - `modelctl add-entry --alias NAME --model PATH` shows a dry-run entry plan with estimated defaults. Applying entries is still planned.
-- `modelctl enable` / `modelctl disable` expose dry-run alias toggles. Applying ini edits is still planned.
+- `modelctl enable` / `modelctl disable` apply real ini edits by default; `--dry-run` remains available for preview.
 
 ## Future config shape
 
