@@ -71,10 +71,10 @@ Examples:
   modelctl aliases model:1                           # show aliases for a model
   modelctl delete model:1 --dry-run                  # preview delete impact without changes
   modelctl delete model:1                            # interactive delete; removes aliases and file
-  modelctl archive model:1                           # dry-run archive impact preview
-  modelctl archive model:1 --yes                     # move file, disable aliases, backup ini
-  modelctl archive --group lab --yes                 # archive aliases under lab/testing section
-  modelctl rollback /path/to/archive-plan.json --yes # restore files and ini from plan
+  modelctl archive model:1                           # move file, disable aliases, backup ini
+  modelctl archive model:1 --dry-run                 # preview archive impact
+  modelctl archive --group lab                       # archive aliases under lab/testing section
+  modelctl rollback /path/to/archive-plan.json       # restore files and ini from plan
 """
 
 TARGET_HELP = """TARGET formats:
@@ -111,25 +111,25 @@ ARCHIVE_HELP = f"""Moves model files to the archive tree and disables affected a
 
 {TARGET_HELP}
 Examples:
-  modelctl archive model:1                  # dry-run preview; no files changed
-  modelctl archive alias:my-model           # dry-run preview by alias
-  modelctl archive model:1 --yes            # apply archive plan and write rollback metadata
-  modelctl archive --group lab --yes        # archive aliases detected under lab/testing headings
+  modelctl archive model:1                  # apply archive plan and write rollback metadata
+  modelctl archive alias:my-model           # archive by alias
+  modelctl archive model:1 --dry-run        # preview without changing files
+  modelctl archive --group lab              # archive aliases detected under lab/testing headings
 """
 
-ROLLBACK_HELP = """Undo an earlier archive by replaying the rollback plan JSON written during `archive --yes`.
+ROLLBACK_HELP = """Undo an earlier archive by replaying the rollback plan JSON written during `archive`.
 
 Use case:
   - you archived a model and disabled its aliases;
   - later you decide that was a mistake;
-  - `rollback PLAN.json` previews putting the GGUF back and restoring the router ini;
-  - `rollback PLAN.json --yes` applies that undo.
+  - `rollback PLAN.json --dry-run` previews putting the GGUF back and restoring the router ini;
+  - `rollback PLAN.json` applies that undo.
 
-Dry-run by default.
+Use `--dry-run` when you want a preview instead of applying immediately.
 
 Examples:
   modelctl rollback /path/to/archive-plan.json        # preview only; no files are changed
-  modelctl rollback /path/to/archive-plan.json --yes  # apply rollback
+  modelctl rollback /path/to/archive-plan.json         # apply rollback
 """
 
 IMPORT_HELP = """Refresh modelctl's registry from the configured router ini.
@@ -175,29 +175,29 @@ Examples:
 
 ENABLE_HELP = """Enable a model alias in the router ini by uncommenting its section.
 
-Dry-run by default. Use --yes to edit the ini file.
+Applies by default. Use --dry-run to preview the ini edit first.
 
 Examples:
   modelctl enable alias:my-model
-  modelctl enable a2 --yes
+  modelctl enable a2 --dry-run
 """
 
 DISABLE_HELP = """Disable a model alias in the router ini by commenting its section.
 
-Dry-run by default. Use --yes to edit the ini file.
+Applies by default. Use --dry-run to preview the ini edit first.
 
 Examples:
   modelctl disable alias:my-model
-  modelctl disable a2 --yes
+  modelctl disable a2 --dry-run
 """
 
 ADD_ENTRY_HELP = """Create a new router ini entry with estimated best default flags/settings.
 
-Dry-run by default. Use --yes to append the generated entry to the configured ini.
+Applies by default. Use --dry-run to preview the generated entry first.
 
 Examples:
   modelctl add-entry --alias my-model --model /path/to/model.gguf
-  modelctl add-entry --alias my-model --model /path/to/model.gguf --yes
+  modelctl add-entry --alias my-model --model /path/to/model.gguf --dry-run
 """
 
 BENCHMARK_HELP = """Benchmark a current model with llama.cpp and suggest settings.
@@ -220,11 +220,11 @@ Examples:
 
 SCAN_HELP = """Scan the configured models folder for GGUF files that exist on disk but are not yet in the router ini.
 
-Dry-run by default. Use --yes to append disabled ini entries for the discovered models after reviewing the preview.
+Applies by default. Use --dry-run to preview the discovered entries first.
 
 Examples:
   modelctl scan
-  modelctl scan --yes
+  modelctl scan --dry-run
 """
 
 
@@ -723,7 +723,7 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
             print(f"WARN download dir missing: {p}")
     else:
         print("WARN download dir unknown")
-    print("Safety: delete requires interactive typed confirmation unless --dry-run; archive is dry-run by default and requires --yes.")
+    print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/rollback/apply commands accept --dry-run previews when you want smoke-test behavior.")
     return exit_code
 
 
@@ -837,9 +837,9 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     if targets is None:
         return 2
     plan = plan_archive_models(imported, targets)
-    if not args.yes:
+    if getattr(args, 'dry_run', False):
         _print_archive_plan(plan, dry_run=True)
-        print("No files or ini entries were changed. Re-run with --yes to apply this exact archive plan.")
+        print("No files or ini entries were changed. Re-run without --dry-run to apply this exact archive plan.")
         return 0
     plan_path = Path(args.plan).expanduser() if args.plan else _default_plan_path(args.config)
     try:
@@ -859,11 +859,11 @@ def cmd_rollback(args: argparse.Namespace, config: configparser.ConfigParser) ->
         print(f"rollback plan not found: {plan_path}", file=sys.stderr)
         return 2
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    print("DRY RUN: archive rollback preview")
-    print(f"  router ini: {plan.get('router_ini')}")
-    print(f"  files to restore: {len(plan.get('moved') or plan.get('entries') or [])}")
-    if not args.yes:
-        print("No files or ini entries were changed. Re-run with --yes to apply rollback.")
+    if getattr(args, 'dry_run', False):
+        print("DRY RUN: archive rollback preview")
+        print(f"  router ini: {plan.get('router_ini')}")
+        print(f"  files to restore: {len(plan.get('moved') or plan.get('entries') or [])}")
+        print("No files or ini entries were changed. Re-run without --dry-run to apply rollback.")
         return 0
     try:
         result = rollback_archive_plan(plan)
@@ -1016,8 +1016,22 @@ def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -
     print(f"  alias: {args.alias}")
     print(f"  model: {args.model}")
     print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
-    print("No ini entries were changed." if not args.yes else "Applying add-entry is planned but not implemented in this public baseline yet.")
-    return 0 if not args.yes else 1
+    if getattr(args, 'dry_run', False):
+        print("No ini entries were changed.")
+        return 0
+    router_ini = Path(config.get("router", "ini")).expanduser()
+    existing = router_ini.read_text(encoding="utf-8") if router_ini.exists() else ""
+    block = "\n".join([
+        f"[{args.alias}]",
+        f"model = {args.model}",
+        "ctx-size = 65536",
+        "n-gpu-layers = 999",
+        "flash-attn = on",
+        "",
+    ])
+    router_ini.write_text((existing.rstrip() + "\n\n" if existing.strip() else "") + block, encoding="utf-8")
+    print(f"APPLIED: appended [{args.alias}] to {router_ini}")
+    return 0
 
 
 def cmd_benchmark(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
@@ -1072,8 +1086,8 @@ def cmd_scan(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     print(f"  unmanaged models found: {len(found)}")
     for entry in found:
         print(f"    - {entry['path']} -> [{entry['alias']}] (disabled entry preview)")
-    if not args.yes:
-        print("No ini entries were changed. Re-run with --yes to append disabled ini entries for the models above.")
+    if getattr(args, 'dry_run', False):
+        print("No ini entries were changed. Re-run without --dry-run to append disabled ini entries for the models above.")
         return 0
     if not found:
         print("Nothing to add.")
@@ -1165,24 +1179,26 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
     archive = sub.add_parser(
         "archive",
-        help="Dry-run/apply archive move with ini alias disable and rollback plan",
+        help="Archive model files, disable aliases, and write rollback metadata",
         description="Move model files to the archive tree and disable affected aliases.",
         epilog=ARCHIVE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     archive.add_argument("target", nargs="*", metavar="TARGET", help="One or more model targets; e.g. model:1 alias:my-model path:/models/model.gguf")
     archive.add_argument("--group", metavar="NAME", help="Archive a named group; currently supports: lab")
-    archive.add_argument("--yes", action="store_true", help="Apply the archive plan; default is dry-run only")
+    archive.add_argument("--dry-run", action="store_true", help="Preview the archive plan without changing anything")
+    archive.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     archive.add_argument("--plan", metavar="PLAN.json", help="Path to write rollback plan JSON when applying")
     rollback = sub.add_parser(
         "rollback",
-        help="Dry-run/apply archive rollback from a plan JSON",
+        help="Rollback a prior archive operation from a plan JSON",
         description="Restore files and router ini from an archive rollback plan JSON.",
         epilog=ROLLBACK_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     rollback.add_argument("plan", metavar="PLAN.json", help="Path to archive rollback plan JSON")
-    rollback.add_argument("--yes", action="store_true", help="Apply rollback; default is dry-run only")
+    rollback.add_argument("--dry-run", action="store_true", help="Preview rollback without changing anything")
+    rollback.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     update_check = sub.add_parser(
         "update-check",
         help="Check Hugging Face metadata for model updates",
@@ -1200,12 +1216,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_entry = sub.add_parser("add-entry", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
     add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
-    add_entry.add_argument("--yes", action="store_true", help="Append entry to ini; default is dry-run")
+    add_entry.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+    add_entry.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     benchmark = sub.add_parser("benchmark", help="Benchmark a model with llama.cpp and suggest settings", description="Benchmark a current model with llama.cpp and suggest the most appropriate settings.", epilog=BENCHMARK_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     benchmark.add_argument("target", metavar="TARGET", help="Model target, e.g. 1 or alias:my-model")
     benchmark.add_argument("--prompt-set", default="smoke", help="Prompt set to run; default: smoke")
     scan = sub.add_parser("scan", help="Scan for manually added GGUFs not yet in the ini", description="Scan the models folder for GGUF files not yet referenced by the router ini.", epilog=SCAN_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    scan.add_argument("--yes", action="store_true", help="Append disabled ini entries for discovered models; default is dry-run")
+    scan.add_argument("--dry-run", action="store_true", help="Preview discovered entries without appending anything")
+    scan.add_argument("--yes", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     return parser
 

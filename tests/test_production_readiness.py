@@ -65,7 +65,7 @@ ctx-size = 4096
             root, models, router_ini, original, config, model = self.make_fixture(td)
             plan_path = root / "archive-plan.json"
 
-            result = self.run_modelctl("--config", str(config), "archive", f"path:{model}", "--yes", "--plan", str(plan_path))
+            result = self.run_modelctl("--config", str(config), "archive", f"path:{model}", "--plan", str(plan_path))
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -73,7 +73,7 @@ ctx-size = 4096
             self.assertIn("router_ini_backup", plan)
             self.assertIn("original_ini_sha256", plan)
 
-            rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path), "--yes")
+            rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path))
             self.assertEqual(rollback.returncode, 0, rollback.stderr + rollback.stdout)
             self.assertEqual(router_ini.read_text(encoding="utf-8"), original)
             self.assertTrue(model.exists())

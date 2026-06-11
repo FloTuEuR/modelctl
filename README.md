@@ -34,7 +34,7 @@ Or use the portable launcher from a checkout:
 
 ## Safe archive workflow
 
-Preview first:
+Apply directly:
 
 ```bash
 modelctl archive model:1
@@ -42,25 +42,25 @@ modelctl archive alias:my-model
 modelctl archive path:/path/to/model.gguf
 ```
 
-Apply only after reviewing the preview:
+Preview without mutating anything:
 
 ```bash
-modelctl archive model:1 --yes
+modelctl archive model:1 --dry-run
 ```
 
 The archive command:
 
-- is dry-run by default;
-- requires `--yes` before moving files or editing the ini;
+- applies by default;
+- accepts `--dry-run` when you want a smoke-test preview first;
 - creates an ini backup next to the router preset;
 - comments impacted aliases instead of deleting them;
 - writes a rollback plan JSON under the configured modelctl plans directory unless `--plan` is provided.
 
-Rollback is also dry-run by default:
+Rollback also applies by default and supports preview mode:
 
 ```bash
 modelctl rollback ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json
-modelctl rollback ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json --yes
+modelctl rollback ~/.config/modelctl/plans/archive-YYYYMMDDTHHMMSSZ.json --dry-run
 ```
 
 ## Safety notes
@@ -71,9 +71,8 @@ Important defaults:
 
 - `setup`, `import`, `list`, `show`, `aliases`, and `doctor` do not modify your router ini.
 - `delete --dry-run` is an impact preview only; `delete TARGET` requires an interactive terminal and typed confirmation.
-- `archive`, `rollback`, and `delete --dry-run` are preview-first workflows.
-- `enable`, `disable`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
-- `add-entry` still previews by default and requires `--yes` to write changes.
+- `archive`, `rollback`, `enable`, `disable`, `add-entry`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
+- `delete --dry-run` is the special preview-only delete path; plain `delete TARGET` still requires interactive typed confirmation.
 - `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
 - rollback plans contain local paths and should be treated as local operational metadata.
 
@@ -86,7 +85,7 @@ Today:
 - `benchmark TARGET` runs a real `llama-bench` invocation when available and persists results for later display in `show`.
 - `update-check TARGET` can persist Hugging Face freshness state when source repo/file metadata is known.
 - `enable` / `disable` apply real ini edits by default, with `--dry-run` available for preview.
-- `add-entry` and richer settings recommendation flows are still roadmap features.
+- `add-entry` now appends a real ini entry by default, with `--dry-run` available for preview.
 
 See [`docs/settings-rules.md`](docs/settings-rules.md) for the current recommendation/output targets: 20+ t/s, 65.5k good context, 128k+ ideal context, full VRAM fit, quality, and large-JSON robustness.
 

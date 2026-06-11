@@ -51,7 +51,7 @@ ctx-size = 8192
         with tempfile.TemporaryDirectory() as td:
             _root, _models, router_ini, original, config, _registry, _main, lab = self.make_fixture(td)
 
-            result = self.run_modelctl("--config", str(config), "archive", f"path:{lab}")
+            result = self.run_modelctl("--config", str(config), "archive", f"path:{lab}", "--dry-run")
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("DRY RUN: archive model impact preview", result.stdout)
@@ -68,7 +68,7 @@ ctx-size = 8192
             plan_path = root / "archive-plan.json"
 
             result = self.run_modelctl(
-                "--config", str(config), "archive", f"path:{lab}", "--yes", "--plan", str(plan_path)
+                "--config", str(config), "archive", f"path:{lab}", "--plan", str(plan_path)
             )
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -92,7 +92,7 @@ ctx-size = 8192
             self.assertIn("archived", listing.stdout)
             self.assertIn(str(dest), listing.stdout)
 
-            rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path), "--yes")
+            rollback = self.run_modelctl("--config", str(config), "rollback", str(plan_path))
             self.assertEqual(rollback.returncode, 0, rollback.stderr + rollback.stdout)
             self.assertTrue(lab.exists())
             self.assertFalse(dest.exists())
@@ -104,7 +104,7 @@ ctx-size = 8192
             plan_path = root / "lab-plan.json"
 
             result = self.run_modelctl(
-                "--config", str(config), "archive", "--group", "lab", "--yes", "--plan", str(plan_path)
+                "--config", str(config), "archive", "--group", "lab", "--plan", str(plan_path)
             )
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -124,7 +124,7 @@ ctx-size = 8192
             plan_path = root / "multi-plan.json"
 
             result = self.run_modelctl(
-                "--config", str(config), "archive", f"path:{lab}", f"path:{extra}", "--yes", "--plan", str(plan_path)
+                "--config", str(config), "archive", f"path:{lab}", f"path:{extra}", "--plan", str(plan_path)
             )
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)

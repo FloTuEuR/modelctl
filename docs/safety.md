@@ -2,7 +2,7 @@
 
 `llama-modelctl` is designed for local GGUF model inventories where mistakes can be expensive: a wrong move can break a running router, waste large disk copies, or remove a model that another service depends on.
 
-## Safe-by-default commands
+## Read-only commands
 
 These commands are read-only with respect to the router ini and model files:
 
@@ -13,8 +13,12 @@ These commands are read-only with respect to the router ini and model files:
 - `show`
 - `aliases`
 - `delete --dry-run`
-- `archive` without `--yes`
-- `rollback` without `--yes`
+- `archive --dry-run`
+- `rollback --dry-run`
+- `enable --dry-run`
+- `disable --dry-run`
+- `add-entry --dry-run`
+- `scan --dry-run`
 
 ## Mutating commands
 
@@ -22,11 +26,12 @@ Only these paths intentionally mutate files:
 
 - `setup --yes`: writes modelctl's own config and registry only; it does not edit the router ini.
 - `delete TARGET`: requires an interactive terminal and typed confirmation; removes impacted alias sections and permanently deletes the selected model file.
-- `archive ... --yes`: edits the router ini, writes an ini backup, moves model files, and writes rollback metadata.
-- `rollback ... --yes`: moves archived files back and restores the router ini from backup metadata.
+- `archive ...`: edits the router ini, writes an ini backup, moves model files, and writes rollback metadata unless `--dry-run` is used.
+- `rollback ...`: moves archived files back and restores the router ini from backup metadata unless `--dry-run` is used.
 - `enable TARGET`: edits the router ini to uncomment/restore an alias section unless `--dry-run` is used.
 - `disable TARGET`: edits the router ini to comment out an alias section unless `--dry-run` is used.
-- `scan`: can write newly discovered entries when run in apply mode; use `--dry-run` to preview.
+- `add-entry`: appends a generated ini entry unless `--dry-run` is used.
+- `scan`: appends newly discovered disabled entries unless `--dry-run` is used.
 
 ## Delete safeguards
 
@@ -42,7 +47,6 @@ Delete apply currently requires:
 
 Archive apply currently requires:
 
-- an explicit `--yes` flag;
 - existing source files;
 - non-existing destinations;
 - a router ini backup;

@@ -70,20 +70,19 @@ ctx-size = 4096
             self.assertIn("llama-bench", combined)
             self.assertIn("not found", combined.lower())
 
-    def test_uniform_dry_run_and_yes_help_and_scan_apply(self):
+    def test_opt_in_dry_run_help_and_scan_apply(self):
         with tempfile.TemporaryDirectory() as td:
             _root, _models, _active, manual, ini, config = self.make_fixture(td)
             scan_help = self.run_modelctl("scan", "-h")
             self.assertEqual(scan_help.returncode, 0, scan_help.stderr + scan_help.stdout)
-            self.assertIn("dry-run by default", scan_help.stdout.lower())
-            self.assertIn("--yes", scan_help.stdout)
+            self.assertIn("--dry-run", scan_help.stdout)
 
-            preview = self.run_modelctl("--config", str(config), "scan")
+            preview = self.run_modelctl("--config", str(config), "scan", "--dry-run")
             self.assertEqual(preview.returncode, 0, preview.stderr + preview.stdout)
             self.assertIn(str(manual), preview.stdout)
             self.assertIn("No ini entries were changed", preview.stdout)
 
-            apply = self.run_modelctl("--config", str(config), "scan", "--yes")
+            apply = self.run_modelctl("--config", str(config), "scan")
             self.assertEqual(apply.returncode, 0, apply.stderr + apply.stdout)
             text = ini.read_text(encoding="utf-8")
             self.assertIn(str(manual), text)
@@ -95,7 +94,7 @@ ctx-size = 4096
         combined = result.stdout.lower()
         self.assertIn("undo an earlier archive", combined)
         self.assertIn("plan json", combined)
-        self.assertIn("dry-run by default", combined)
+        self.assertIn("--dry-run", combined)
 
 
 if __name__ == "__main__":

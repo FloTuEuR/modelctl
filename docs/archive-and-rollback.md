@@ -11,29 +11,19 @@ Typical use case:
 3. you want any router aliases for that model disabled, not deleted;
 4. you want a machine-readable undo file written at the same time.
 
-## Archive preview
-
-```bash
-modelctl archive 1
-modelctl archive alias:example
-modelctl archive path:/path/to/example.gguf
-```
-
-No files are changed during preview.
-
 ## Archive apply
 
 ```bash
-modelctl archive 1 --yes
+modelctl archive 1
 ```
 
 Optional explicit plan path:
 
 ```bash
-modelctl archive 1 --yes --plan ./archive-plan.json
+modelctl archive 1 --plan ./archive-plan.json
 ```
 
-For each selected model, `archive --yes`:
+For each selected model, `archive`:
 
 1. writes a backup beside the router ini, e.g. `models.ini.bak`;
 2. comments aliases that referenced the model;
@@ -41,9 +31,19 @@ For each selected model, `archive --yes`:
 4. moves the GGUF into the archive tree;
 5. writes a rollback plan JSON.
 
+## Archive preview
+
+```bash
+modelctl archive 1 --dry-run
+modelctl archive alias:example --dry-run
+modelctl archive path:/path/to/example.gguf --dry-run
+```
+
+No files are changed during preview.
+
 ## Rollback: what it is for
 
-Use `rollback` to undo a previous `archive --yes`.
+Use `rollback` to undo a previous `archive`.
 
 That rollback plan JSON is the receipt for the archive action. It records enough information to:
 
@@ -51,16 +51,16 @@ That rollback plan JSON is the receipt for the archive action. It records enough
 - restore the router ini state from before the archive;
 - do that safely in preview mode first.
 
-## Rollback preview
+## Rollback apply
 
 ```bash
 modelctl rollback ./archive-plan.json
 ```
 
-This shows what would be restored. No files are changed.
-
-## Rollback apply
+## Rollback preview
 
 ```bash
-modelctl rollback ./archive-plan.json --yes
+modelctl rollback ./archive-plan.json --dry-run
 ```
+
+This shows what would be restored. No files are changed.
