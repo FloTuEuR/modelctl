@@ -20,6 +20,7 @@ from typing import Any
 from modelctl_core import (
     apply_archive_plan,
     apply_delete_plan,
+    apply_restore_plan,
     augment_with_scanned_files,
     detect_from_ini,
     infer_archive_dirs,
@@ -34,7 +35,7 @@ DEFAULT_CONFIG = Path.home() / ".config" / "modelctl" / "config.ini"
 
 
 def _state_dir() -> Path:
-    return Path(os.environ.get("MODELCTL_STATE_DIR", Path.home() / ".modelctl")).expanduser()
+    return Path(os.environ.get("MODELCTL_STATE_DIR", Path.home() / ".local" / "state" / "modelctl")).expanduser()
 
 
 def _benchmark_dir(config: configparser.ConfigParser) -> Path:
@@ -70,7 +71,8 @@ Examples:
   modelctl aliases 1                                 # show aliases for a model
   modelctl delete 1 --dry-run                        # preview delete impact without changes
   modelctl delete 1                                  # interactive delete; removes aliases and file
-  modelctl archive 1                                 # move file and disable aliases
+  modelctl archive 1                                 # move file and preserve aliases
+  modelctl archive 1 --disable-aliases               # move file and disable directly linked aliases
   modelctl archive 1 --dry-run                       # preview archive impact
   modelctl archive --group lab                       # archive aliases under lab/testing section
 """
@@ -107,14 +109,16 @@ Examples:
   modelctl delete path:/models/model.gguf
 """
 
-ARCHIVE_HELP = f"""Moves model files to the archive tree and disables affected aliases.
+ARCHIVE_HELP = f"""Moves model files to the archive tree while preserving aliases by default.
 
-{TARGET_HELP}
-Examples:
-  modelctl archive 1                       # archive by model row number
-  modelctl archive alias:my-model          # archive by alias
+{TARGET_HELP}Examples:
+  modelctl archive 1                       # archive by model row number; preserve aliases
+  modelctl archive alias:my-model          # archive by alias; preserve aliases
+  modelctl archive 1 --disable-aliases     # also disable aliases directly linked to the model
   modelctl archive 1 --dry-run             # preview without changing files
   modelctl archive --group lab             # archive aliases detected under lab/testing headings
+
+Archive writes movement/recovery metadata for restore in modelctl-owned plan storage.
 """
 
 IMPORT_HELP = """Refresh modelctl's registry from the configured router ini.
@@ -841,7 +845,7 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     targets = _archive_targets(args, imported)
     if targets is None:
         return 2
-    plan = plan_archive_models(imported, targets)
+    plan = plan_archive_models(imported, targets, disable_aliases=bool(getattr(args, "disable_aliases", False)))
     if getattr(args, 'dry_run', False):
         _print_archive_plan(plan, dry_run=True)
         print("No files or ini entries were changed. Re-run without --dry-run to apply this exact archive plan.")
@@ -1081,11 +1085,100 @@ def cmd_scan(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     return 0
 
 
+def _archive_metadata_dirs(config_path: str) -> list[Path]:
+    config_file = Path(config_path).expanduser()
+    dirs = [config_file.with_name("plans")]
+    state_dir = _state_dir() / "archive"
+    if state_dir not in dirs:
+        dirs.append(state_dir)
+    return dirs
+
+
+def _find_archive_metadata(config_path: str, archived_path: str) -> dict[str, Any] | None:
+    for directory in _archive_metadata_dirs(config_path):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.json"), reverse=True):
+            payload = _load_json(path)
+            if not isinstance(payload, dict) or payload.get("action") != "archive_models":
+                continue
+            for entry in payload.get("entries", []):
+                if entry.get("destination") == archived_path:
+                    return payload
+    return None
+
+
+def _active_restore_path(config: configparser.ConfigParser, archived_path: str, metadata: dict[str, Any] | None) -> str:
+    if metadata:
+        for entry in metadata.get("entries", []):
+            if entry.get("destination") == archived_path and entry.get("source"):
+                return str(Path(entry["source"]).expanduser())
+    download_dir = config.get("models", "download_dir", fallback=None)
+    if not download_dir:
+        return str(Path(archived_path).expanduser().name)
+    return str(Path(download_dir).expanduser() / Path(archived_path).name)
+
+
+def _restore_plan(config: configparser.ConfigParser, config_path: str, target: str) -> dict[str, Any]:
+    imported = _import_from_config(config)
+    archived_path = _resolve_model_target(imported, target)
+    if archived_path is None:
+        archived_path = target.split(":", 1)[1] if target.startswith("path:") else target
+    archived = Path(archived_path).expanduser()
+    metadata = _find_archive_metadata(config_path, str(archived))
+    active = Path(_active_restore_path(config, str(archived), metadata)).expanduser()
+    warnings: list[str] = []
+    if not archived.exists():
+        warnings.append(f"archive source missing: {archived}")
+    if active.exists():
+        warnings.append(f"target active file already exists: {active}")
+    reenable_aliases = False
+    if metadata:
+        reenable_aliases = metadata.get("aliases_policy") == "disable"
+    return {
+        "version": 1,
+        "action": "restore_models",
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "router_ini": config.get("router", "ini"),
+        "entries": [
+            {
+                "source": str(archived),
+                "destination": str(active),
+                "reenable_aliases": reenable_aliases,
+                "metadata_found": bool(metadata),
+            }
+        ],
+        "warnings": warnings,
+        "requires_confirmation": False,
+    }
+
+
+def _print_restore_plan(plan: dict[str, Any], dry_run: bool) -> None:
+    print("DRY RUN: restore model impact preview" if dry_run else "APPLIED: restore model")
+    print(f"  router ini: {plan['router_ini']}")
+    for idx, entry in enumerate(plan.get("entries", []), start=1):
+        print(f"  model {idx}:")
+        print(f"    archive source: {entry['source']}")
+        print(f"    active destination: {entry['destination']}")
+        print(f"    re-enable aliases: {entry.get('reenable_aliases', False)}")
+    for warning in plan.get("warnings", []):
+        print(f"  warning: {warning}")
+
+
 def cmd_restore(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
-    print("Restore archived model")
-    print("status: not implemented yet")
-    print("next: archive/restore implementation will move archived GGUF files back to active storage")
-    return 1
+    plan = _restore_plan(config, args.config, args.target)
+    if getattr(args, "dry_run", False):
+        _print_restore_plan(plan, dry_run=True)
+        print("No files or ini entries were changed. Re-run without --dry-run to restore.")
+        return 0
+    try:
+        applied = apply_restore_plan(plan)
+    except Exception as exc:
+        print(f"restore failed safely: {exc}", file=sys.stderr)
+        return 1
+    _print_restore_plan(applied, dry_run=False)
+    print("Restore applied. Router ini backup was written and unrelated ini content was preserved.")
+    return 0
 
 
 def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
@@ -1184,14 +1277,15 @@ def build_parser() -> argparse.ArgumentParser:
     delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
     archive = sub.add_parser(
         "archive",
-        help="Archive model files and disable aliases",
-        description="Move model files to the archive tree and disable affected aliases.",
+        help="Archive model files while preserving aliases by default",
+        description="Move model files to the archive tree; aliases are preserved unless --disable-aliases is used.",
         epilog=ARCHIVE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     archive.add_argument("target", nargs="*", metavar="TARGET", help="One or more model targets; e.g. 1 alias:my-model path:/models/model.gguf")
     archive.add_argument("--group", metavar="NAME", help="Archive a named group; currently supports: lab")
     archive.add_argument("--dry-run", action="store_true", help="Preview the archive plan without changing anything")
+    archive.add_argument("--disable-aliases", action="store_true", help="Disable only aliases that directly point at archived models; default preserves aliases")
     archive.add_argument("--plan", metavar="PLAN.json", help="Optional path to write recovery metadata JSON")
     update_check = sub.add_parser(
         "update-check",
