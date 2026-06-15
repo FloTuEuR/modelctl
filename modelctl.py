@@ -1031,6 +1031,36 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
         return 2
     plan = plan_archive_models(imported, targets, disable_aliases=bool(getattr(args, "disable_aliases", False)))
     if getattr(args, 'dry_run', False):
+        if getattr(args, 'json', False):
+            data = {
+                "targets": targets,
+                "dry_run": True,
+                "would_move_file": False,
+                "would_update_ini": False,
+                "aliases_preserved": plan["aliases_policy"] == "preserve",
+                "disable_aliases": bool(getattr(args, "disable_aliases", False)),
+                "affected_aliases": [],
+                "entries": [],
+                "planned_changes": [],
+                "metadata_path": None,
+            }
+            for entry in plan["entries"]:
+                action = "preserve" if plan["aliases_policy"] == "preserve" else "disable"
+                data["entries"].append({
+                    "source_path": entry["source"],
+                    "archive_path": entry["destination"],
+                    "aliases_impacted": entry["aliases_impacted"],
+                })
+                data["affected_aliases"].extend(entry["aliases_impacted"])
+                data["planned_changes"].append(
+                    f"move {Path(entry['source']).name} to archive"
+                )
+                if entry["aliases_impacted"]:
+                    data["planned_changes"].append(
+                        f"{action} {len(entry['aliases_impacted'])} alias(es)"
+                    )
+            _print_json(_json_envelope("archive", data, warnings=plan.get("warnings")))
+            return 0
         _print_archive_plan(plan, dry_run=True)
         print("No files or ini entries were changed. Re-run without --dry-run to apply this exact archive plan.")
         return 0
@@ -1183,14 +1213,35 @@ def cmd_enable_disable(args: argparse.Namespace, config: configparser.ConfigPars
 
 
 def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    router_ini = Path(config.get("router", "ini")).expanduser()
+    if getattr(args, 'dry_run', False):
+        if getattr(args, 'json', False):
+            planned_changes = [
+                f"append section [{args.alias}] to router ini",
+                f"set model = {args.model}",
+                "set ctx-size = 65536",
+                "set n-gpu-layers = 999",
+                "set flash-attn = on",
+            ]
+            _print_json(_json_envelope("add", {
+                "target_path": str(router_ini),
+                "alias": args.alias,
+                "model_path": args.model,
+                "dry_run": True,
+                "would_write_ini": False,
+                "planned_changes": planned_changes,
+            }))
+            return 0
+        print("Router ini entry plan with estimated best defaults")
+        print(f"  alias: {args.alias}")
+        print(f"  model: {args.model}")
+        print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
+        print("No ini entries were changed.")
+        return 0
     print("Router ini entry plan with estimated best defaults")
     print(f"  alias: {args.alias}")
     print(f"  model: {args.model}")
     print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
-    if getattr(args, 'dry_run', False):
-        print("No ini entries were changed.")
-        return 0
-    router_ini = Path(config.get("router", "ini")).expanduser()
     existing = router_ini.read_text(encoding="utf-8") if router_ini.exists() else ""
     block = "\n".join([
         f"[{args.alias}]",
@@ -1549,6 +1600,7 @@ def build_parser() -> argparse.ArgumentParser:
     archive.add_argument("--dry-run", action="store_true", help="Preview the archive plan without changing anything")
     archive.add_argument("--disable-aliases", action="store_true", help="Disable only aliases that directly point at archived models; default preserves aliases")
     archive.add_argument("--plan", metavar="PLAN.json", help="Optional path to write recovery metadata JSON")
+    archive.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     update_check = sub.add_parser(
         "update-check",
         help="Check Hugging Face metadata for model updates",
@@ -1567,10 +1619,12 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--alias", required=True, help="Router alias/section name to create")
     add.add_argument("--model", required=True, help="GGUF model path for the new entry")
     add.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+    add.add_argument("--json", action="store_true", help="Emit stable JSON envelope output (requires --dry-run)")
     add_entry = sub.add_parser("add-entry", help="Deprecated alias for add", description="Deprecated compatibility alias for `modelctl add`.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
     add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
     add_entry.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+    add_entry.add_argument("--json", action="store_true", help="Emit stable JSON envelope output (requires --dry-run)")
 
     benchmark = sub.add_parser("benchmark", help="Benchmark a model with llama.cpp and suggest settings", description="Benchmark a current model with llama.cpp and suggest the most appropriate settings.", epilog=BENCHMARK_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     benchmark.add_argument("target", metavar="TARGET", help="Model target, e.g. 1 or alias:my-model")

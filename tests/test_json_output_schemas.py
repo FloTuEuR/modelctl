@@ -224,6 +224,86 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assertIn("Aliases", result.stdout)
             self.assertNotIn('"status"', result.stdout)
 
+    def test_add_dry_run_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "add", "--alias", "my-model", "--model", "/some/path.gguf",
+                "--dry-run", "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "add")
+            self.assertIsNone(payload["error"])
+            self.assertIn("target_path", payload["data"])
+            self.assertIn("alias", payload["data"])
+            self.assertIn("model_path", payload["data"])
+            self.assertIs(payload["data"]["dry_run"], True)
+            self.assertIs(payload["data"]["would_write_ini"], False)
+            self.assertIsInstance(payload["data"]["planned_changes"], list)
+            self.assertTrue(len(payload["data"]["planned_changes"]) > 0)
+
+    def test_archive_dry_run_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "archive", "1",
+                "--dry-run", "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "archive")
+            self.assertIsNone(payload["error"])
+            self.assertIn("targets", payload["data"])
+            self.assertIs(payload["data"]["dry_run"], True)
+            self.assertIs(payload["data"]["would_move_file"], False)
+            self.assertIs(payload["data"]["would_update_ini"], False)
+            self.assertIn("aliases_preserved", payload["data"])
+            self.assertIn("disable_aliases", payload["data"])
+            self.assertIn("affected_aliases", payload["data"])
+            self.assertIsInstance(payload["data"]["affected_aliases"], list)
+            self.assertIn("entries", payload["data"])
+            self.assertIsInstance(payload["data"]["entries"], list)
+            self.assertTrue(len(payload["data"]["entries"]) >= 1)
+            entry = payload["data"]["entries"][0]
+            self.assertIn("source_path", entry)
+            self.assertIn("archive_path", entry)
+            self.assertIn("aliases_impacted", entry)
+            self.assertIsInstance(payload["data"]["planned_changes"], list)
+            self.assertTrue(len(payload["data"]["planned_changes"]) > 0)
+            self.assertIsNone(payload["data"]["metadata_path"])
+            self.assertIn("warnings", payload)
+
+    def test_human_add_dry_run_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "add", "--alias", "my-model", "--model", "/some/path.gguf",
+                "--dry-run",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("Router ini entry plan", result.stdout)
+            self.assertIn("No ini entries were changed", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_human_archive_dry_run_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "archive", "1",
+                "--dry-run",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("DRY RUN", result.stdout)
+            self.assertIn("No files or ini entries were changed", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
