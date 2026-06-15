@@ -673,6 +673,30 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Cannot combine", result.stderr)
 
+    def test_update_check_missing_target_shows_usage(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "update-check")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("usage:", result.stderr)
+            self.assertIn("TARGET", result.stderr)
+
+    def test_show_missing_target_shows_usage(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "show")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("usage:", result.stderr)
+            self.assertIn("TARGET", result.stderr)
+
+    def test_benchmark_missing_target_shows_usage(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "benchmark")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("usage:", result.stderr)
+            self.assertIn("TARGET", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

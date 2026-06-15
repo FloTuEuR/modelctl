@@ -1214,6 +1214,10 @@ def _append_disabled_entries(router_ini: Path, entries: list[dict[str, str]]) ->
 
 
 def cmd_update_check(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    if not args.target:
+        print("usage: modelctl update-check TARGET", file=sys.stderr)
+        print("Try: modelctl list", file=sys.stderr)
+        return 2
     imported = _import_from_config(config)
     alias = _resolve_alias_target(imported, args.target)
     if not alias:
