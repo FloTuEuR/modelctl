@@ -21,6 +21,7 @@ from modelctl_core import (
     apply_archive_plan,
     apply_delete_plan,
     apply_restore_plan,
+    apply_recover_manifest,
     augment_with_scanned_files,
     detect_from_ini,
     infer_archive_dirs,
@@ -778,22 +779,28 @@ def cmd_delete(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         print("No files or ini entries were changed.")
         return 0
     _print_delete_plan(plan, dry_run=False)
-    if not _confirm_delete_interactively(plan):
+    if not getattr(args, "apply", False) and not _confirm_delete_interactively(plan):
         print("Delete cancelled. No files or ini entries were changed.")
         return 1
+    manifest_path = _default_recovery_path(args.config)
     try:
-        result = apply_delete_plan(plan)
+        result = apply_delete_plan(plan, manifest_path=manifest_path)
     except Exception as exc:
         print(f"delete failed safely: {exc}", file=sys.stderr)
         return 1
     print(f"APPLIED: deleted {len(result['deleted_files'])} file(s) and removed {len(plan['aliases_impacted'])} alias section(s)")
-    print(f"  router ini backup: {result['router_ini_backup']}")
+    print(f"  recovery manifest: {result['recovery_manifest']}")
     return 0
 
 
 def _default_plan_path(config_path: str, prefix: str = "archive") -> Path:
     stamp = _utc_now().replace(":", "").replace("-", "")
     return Path(config_path).expanduser().with_name("plans") / f"{prefix}-{stamp}.json"
+
+
+def _default_recovery_path(config_path: str, prefix: str = "delete") -> Path:
+    stamp = _utc_now().replace(":", "").replace("-", "")
+    return Path(config_path).expanduser().with_name("recovery") / f"{prefix}-{stamp}.json"
 
 
 def _print_archive_plan(plan: dict[str, Any], dry_run: bool) -> None:
@@ -1180,12 +1187,29 @@ def cmd_restore(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     print("Restore applied. Router ini backup was written and unrelated ini content was preserved.")
     return 0
 
-
 def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
-    print("Recover aliases from delete recovery manifest")
-    print("status: not implemented yet")
-    print("next: delete/recover implementation will restore only affected aliases/sections")
-    return 1
+    manifest_path = Path(args.manifest).expanduser()
+    manifest = _load_json(manifest_path)
+    if not isinstance(manifest, dict):
+        print(f"recover failed safely: could not read recovery manifest: {manifest_path}", file=sys.stderr)
+        return 1
+    if getattr(args, "dry_run", False):
+        print("DRY RUN: recover delete manifest")
+        print(f"  manifest: {manifest_path}")
+        print(f"  model: {manifest.get('deleted_model_path')}")
+        print(f"  sections to restore: {len(manifest.get('affected_sections', []))}")
+        return 0
+    try:
+        result = apply_recover_manifest(manifest, router_ini=config.get("router", "ini"))
+    except Exception as exc:
+        print(f"recover failed safely: {exc}", file=sys.stderr)
+        return 1
+    print("APPLIED: recovered delete manifest")
+    print(f"  router ini: {result['router_ini']}")
+    print(f"  sections restored: {len(result['sections'])}")
+    for section in result["sections"]:
+        print(f"    - {section}")
+    return 0
 
 
 def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
@@ -1275,6 +1299,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     delete.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, alias:my-model, path:/models/model.gguf, or filename.gguf")
     delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
+    delete.add_argument("--apply", action="store_true", help="Explicitly apply destructive delete in non-interactive automation; writes recovery manifest first")
     archive = sub.add_parser(
         "archive",
         help="Archive model files while preserving aliases by default",

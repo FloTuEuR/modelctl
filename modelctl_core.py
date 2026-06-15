@@ -251,6 +251,16 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write text via temp file + fsync + replace to avoid partial ini/plan writes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -517,8 +527,54 @@ def _updated_ini_for_delete(original_text: str, plan: dict[str, Any]) -> str:
     return "\n".join(collapsed) + ("\n" if collapsed else "")
 
 
-def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """Apply a confirmed delete plan: backup ini, remove aliases, delete files."""
+def _section_lines(original_text: str, alias: dict[str, Any]) -> list[str]:
+    lines = original_text.splitlines()
+    start = int(alias.get("start_line") or 0)
+    end = int(alias.get("end_line") or 0)
+    if start < 1 or end < start:
+        return []
+    return lines[start - 1 : end]
+
+
+def focused_delete_manifest(plan: dict[str, Any], original_text: str) -> dict[str, Any]:
+    model_path = Path(plan["model_path"]).expanduser()
+    affected_aliases = []
+    affected_sections = []
+    for alias in plan.get("aliases", []):
+        params = dict(alias.get("params") or {})
+        affected_aliases.append(
+            {
+                "section": alias.get("section"),
+                "enabled": alias.get("enabled"),
+                "model_path": alias.get("model_path"),
+                "params": params,
+            }
+        )
+        affected_sections.append(
+            {
+                "section": alias.get("section"),
+                "enabled": alias.get("enabled"),
+                "lines": _section_lines(original_text, alias),
+            }
+        )
+    return {
+        "version": 1,
+        "action": "recover_deleted_model",
+        "deleted_at": _utc_now(),
+        "router_ini": plan.get("router_ini"),
+        "deleted_model_path": str(model_path),
+        "model_filename": model_path.name,
+        "model_size_bytes": model_path.stat().st_size if model_path.exists() else None,
+        "model_sha256": _sha256_file(model_path),
+        "source_metadata": plan.get("source_metadata") or {},
+        "affected_aliases": affected_aliases,
+        "affected_sections": affected_sections,
+        "reason": plan.get("reason"),
+    }
+
+
+def apply_delete_plan(plan: dict[str, Any], manifest_path: str | Path | None = None) -> dict[str, Any]:
+    """Apply a confirmed delete plan: write focused recovery manifest, remove aliases, delete files."""
     if plan.get("action") != "delete_model":
         raise ValueError("not a delete plan")
     router_ini_value = plan.get("router_ini")
@@ -528,11 +584,13 @@ def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
     original_text = router_ini.read_text(encoding="utf-8")
     applied = dict(plan)
     applied["applied_at"] = _utc_now()
-    applied["original_ini_sha256"] = _sha256_text(original_text)
-    backup_path = router_ini.with_suffix(router_ini.suffix + ".delete.bak")
-    applied["router_ini_backup"] = str(backup_path)
 
-    _atomic_write_text(backup_path, original_text)
+    manifest = focused_delete_manifest(plan, original_text)
+    if manifest_path is not None:
+        recovery_path = Path(manifest_path).expanduser()
+        _atomic_write_text(recovery_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        applied["recovery_manifest"] = str(recovery_path)
+
     _atomic_write_text(router_ini, _updated_ini_for_delete(original_text, applied))
     deleted_files: list[str] = []
     try:
@@ -546,6 +604,39 @@ def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         _atomic_write_text(router_ini, original_text)
         raise
+
+
+def apply_recover_manifest(manifest: dict[str, Any], router_ini: str | Path | None = None) -> dict[str, Any]:
+    if manifest.get("action") != "recover_deleted_model":
+        raise ValueError("not a delete recovery manifest")
+    model_path = Path(manifest.get("deleted_model_path") or "").expanduser()
+    if not model_path.exists():
+        raise ValueError(f"model file is still missing: {model_path}")
+    router_ini_path = Path(router_ini or manifest.get("router_ini") or "").expanduser()
+    if not str(router_ini_path):
+        raise ValueError("recovery manifest has no router_ini")
+    original_text = router_ini_path.read_text(encoding="utf-8") if router_ini_path.exists() else ""
+    imported = detect_from_ini(router_ini_path)
+    existing_sections = {alias.get("section") for alias in imported.get("aliases", [])}
+    manifest_sections = [section for section in manifest.get("affected_sections", []) if section.get("section")]
+    conflicts = [section["section"] for section in manifest_sections if section["section"] in existing_sections]
+    if conflicts:
+        raise ValueError("alias conflict: " + ", ".join(conflicts))
+
+    chunks = [original_text.rstrip()] if original_text.strip() else []
+    restored_sections: list[str] = []
+    for section in manifest_sections:
+        lines = list(section.get("lines") or [])
+        if not lines:
+            alias = next((a for a in manifest.get("affected_aliases", []) if a.get("section") == section.get("section")), None)
+            params = dict(alias.get("params") or {}) if alias else {}
+            lines = [f"[{section['section']}]"] + [f"{key} = {value}" for key, value in params.items()]
+        if chunks:
+            chunks.append("")
+        chunks.extend(lines)
+        restored_sections.append(section["section"])
+    _atomic_write_text(router_ini_path, "\n".join(chunks).rstrip() + "\n")
+    return {"recovered": True, "router_ini": str(router_ini_path), "sections": restored_sections}
 
 
 def apply_archive_plan(plan: dict[str, Any], plan_path: str | Path | None = None) -> dict[str, Any]:
