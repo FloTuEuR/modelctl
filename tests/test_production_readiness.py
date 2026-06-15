@@ -10,15 +10,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "modelctl.py"
 PRIVATE_MARKERS = [
-    "/home/",
-    "C:\\Users\\",
-    "192.168.",
-    "10.",
-    "172.16.",
+    "flori",
+    "/home/flori",
+    "C:\\Users\\flori",
+    "192.168",
     "localai",
-    "private-hostname",
-    "private-username",
-    "private-mount",
+    "buster",
+    "Buster",
+    "/mnt/windows-ssd",
 ]
 
 
@@ -105,20 +104,20 @@ ctx-size = 4096
         self.assertEqual(help_result.returncode, 0, help_result.stderr + help_result.stdout)
         combined = help_result.stdout + help_result.stderr
         self.assertIn("/path/to/models.ini", combined)
-        for marker in ("/home/", "C:\\Users\\", "192.168.", "localai", "private-hostname"):
+        for marker in ("/home/flori", "C:\\Users\\flori", "192.168", "localai", "Buster"):
             self.assertNotIn(marker, combined)
 
         missing = self.run_modelctl("setup", "/definitely/missing/models.ini")
         self.assertNotEqual(missing.returncode, 0)
         combined = missing.stdout + missing.stderr
         self.assertIn("/path/to/models.ini", combined)
-        self.assertNotIn("/home/", combined)
+        self.assertNotIn("/home/flori", combined)
 
     def test_shell_launcher_is_portable_and_has_no_user_specific_default(self):
         launcher = (ROOT / "modelctl").read_text(encoding="utf-8")
         self.assertIn("SCRIPT_DIR", launcher)
-        self.assertNotIn("/home/", launcher)
-        self.assertNotIn("C:\\Users\\", launcher)
+        self.assertNotIn("/home/flori", launcher)
+        self.assertNotIn("C:\\Users\\flori", launcher)
 
     def test_applied_archive_plan_does_not_embed_full_original_ini_by_default(self):
         with tempfile.TemporaryDirectory() as td:

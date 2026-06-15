@@ -25,5 +25,3 @@ private/
 
 # Local-only security scan helpers; never publish
 scripts/
-
-private/
