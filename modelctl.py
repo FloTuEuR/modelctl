@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1645,67 +1647,165 @@ def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     return 0
 
 
+def _monitor_discovery_endpoints(config: configparser.ConfigParser) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    configured_values: list[str] = []
+    for option in ("endpoint", "base_url", "url"):
+        value = config.get("monitor", option, fallback="").strip()
+        if value:
+            configured_values.append(value)
+    endpoints_value = config.get("monitor", "endpoints", fallback="").strip()
+    if endpoints_value:
+        configured_values.extend(x.strip() for x in re.split(r"[,\n]", endpoints_value) if x.strip())
+    for endpoint in configured_values:
+        candidates.append({"endpoint": endpoint.rstrip("/"), "source": "configured"})
+    include_defaults = config.getboolean("monitor", "discover_defaults", fallback=True)
+    if include_defaults:
+        candidates.extend([
+            {"endpoint": "http://127.0.0.1:8080/v1", "source": "default_loopback"},
+            {"endpoint": "http://localhost:8080/v1", "source": "default_localhost"},
+        ])
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for candidate in candidates:
+        endpoint = candidate["endpoint"].rstrip("/")
+        if endpoint in seen:
+            continue
+        seen.add(endpoint)
+        unique.append({"endpoint": endpoint, "source": candidate["source"]})
+    return unique
+
+
+def _models_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.rstrip("/")
+    return f"{endpoint}/models" if endpoint.endswith("/v1") else f"{endpoint}/v1/models"
+
+
+def _query_models_endpoint(endpoint: str, timeout: float) -> dict[str, Any]:
+    models_endpoint = _models_endpoint(endpoint)
+    result: dict[str, Any] = {"endpoint": endpoint.rstrip("/"), "reachable": False, "models_endpoint": models_endpoint, "model_ids": [], "error_message": None}
+    try:
+        request = urllib.request.Request(models_endpoint, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(1024 * 1024)
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        model_ids: list[str] = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("id") is not None:
+                    model_ids.append(str(item["id"]))
+                elif isinstance(item, str):
+                    model_ids.append(item)
+        result["reachable"] = True
+        result["model_ids"] = model_ids
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        result["error_message"] = str(exc)
+    return result
+
+
+def cmd_monitor_discover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    timeout = config.getfloat("monitor", "discovery_timeout", fallback=0.5)
+    candidates = []
+    for candidate in _monitor_discovery_endpoints(config):
+        probed = _query_models_endpoint(candidate["endpoint"], timeout)
+        probed["source"] = candidate["source"]
+        candidates.append(probed)
+    reachable = [candidate for candidate in candidates if candidate["reachable"]]
+    selected = reachable[0]["endpoint"] if len(reachable) == 1 else None
+    warnings: list[str] = []
+    if len(reachable) > 1:
+        warnings.append("multiple servers found; explicit selection/configuration is required")
+    elif not reachable:
+        warnings.append("no server found; provide endpoint or log details")
+    data = {"candidates": candidates, "found_count": len(reachable), "selected": selected, "mutated": False}
+    if getattr(args, "json", False):
+        _print_json(_json_envelope("monitor discover", data, warnings=warnings))
+        return 0
+    print("Monitor discovery (read-only)")
+    print("  no mutation performed")
+    print(f"  found count: {len(reachable)}")
+    if selected:
+        print(f"  selected/recommended: {selected}")
+    elif len(reachable) > 1:
+        print("  multiple servers found; explicit selection/configuration is required")
+    else:
+        print("  no server found; provide endpoint or log details")
+    for candidate in candidates:
+        print(f"  - endpoint: {candidate['endpoint']}")
+        print(f"    source: {candidate['source']}")
+        print(f"    reachable: {str(candidate['reachable']).lower()}")
+        print(f"    models endpoint: {candidate['models_endpoint']}")
+        if candidate["model_ids"]:
+            print(f"    model ids: {', '.join(candidate['model_ids'])}")
+        if candidate.get("error_message"):
+            print(f"    error: {candidate['error_message']}")
+    return 0
+
+
 def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     target = getattr(args, "target", "router")
+    if target == "discover":
+        return cmd_monitor_discover(args, config)
     backend = config.get("monitor", "backend", fallback="none").strip().lower() or "none"
     lines_requested = max(int(getattr(args, "lines", 80) or 80), 0)
     follow = bool(getattr(args, "follow", False))
     as_json = bool(getattr(args, "json", False))
-    payload: dict[str, Any] = {
-        "target": target,
-        "backend": backend,
-        "follow": follow,
-        "lines_requested": lines_requested,
-        "mode": "read-only",
-        "status": "error",
-        "lines": [],
-    }
-
+    payload: dict[str, Any] = {"target": target, "backend": backend, "follow": follow, "lines_requested": lines_requested, "mode": "read-only"}
     def finish(code: int) -> int:
         if as_json:
             error = None
             if code != 0:
                 error = {"code": "monitor_failed", "message": str(payload.get("error") or "monitor failed")}
-            data = {key: value for key, value in payload.items() if key != "error"}
-            _print_json(_json_envelope("monitor", data, status="ok" if code == 0 else "error", error=error))
+            _print_json(_json_envelope("monitor", payload, status="ok" if code == 0 else "error", error=error))
         else:
             if code == 0:
                 print("Router monitor")
-                print(f"  target: {payload['target']}")
-                print(f"  backend: {payload['backend']}")
-                print(f"  mode: {payload['mode']}")
-                print(f"  status: {payload['status']}")
+                print("  mode: read-only")
+                print(f"  target: {payload.get('target')}")
+                print(f"  backend: {payload.get('backend')}")
+                if payload.get("log_file"):
+                    print(f"  log file: {payload['log_file']}")
                 for line in payload.get("lines", []):
                     print(line)
             else:
                 print(str(payload.get("error") or "monitor failed"), file=sys.stderr)
         return code
-
     if target != "router":
         payload["error"] = f"unsupported monitor target: {target}"
         return finish(2)
     if backend == "none":
-        payload["error"] = "monitor backend is not configured; add [monitor] backend = file and log_file = /path/to/router.log"
-        return finish(1)
+        payload["status"] = "unconfigured"
+        payload["error"] = "monitor backend is not configured; set [monitor] backend=file/systemd/container/command"
+        return finish(2)
     if backend == "file":
-        log_value = config.get("monitor", "log_file", fallback="").strip()
-        if not log_value:
-            payload["error"] = "monitor file backend requires [monitor] log_file"
+        log_file = config.get("monitor", "log_file", fallback="").strip()
+        payload["log_file"] = log_file
+        if not log_file:
+            payload["status"] = "unconfigured"
+            payload["error"] = "monitor backend=file requires [monitor] log_file"
+            return finish(2)
+        path = Path(log_file).expanduser()
+        if not path.exists():
+            payload["status"] = "missing"
+            payload["error"] = f"configured log file does not exist: {path}"
             return finish(1)
-        log_file = Path(log_value).expanduser()
-        payload["log_file"] = str(log_file)
-        if not log_file.exists() or not log_file.is_file():
-            payload["error"] = f"monitor log file not found: {log_file}"
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            payload["status"] = "error"
+            payload["error"] = f"failed to read configured log file: {exc}"
             return finish(1)
-        text_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
-        payload["lines"] = text_lines[-lines_requested:] if lines_requested else []
         payload["status"] = "ok"
+        payload["lines"] = lines[-lines_requested:] if lines_requested else []
         return finish(0)
-    if backend in {"systemd", "docker", "container", "modelctl", "command"}:
-        payload["error"] = f"monitor backend '{backend}' is configured but execution is not implemented in this read-only foundation"
-        return finish(1)
+    if backend in {"systemd", "container", "docker", "command", "modelctl"}:
+        payload["status"] = "not_implemented"
+        payload["error"] = f"monitor backend '{backend}' is recognized but not implemented yet"
+        return finish(2)
+    payload["status"] = "unsupported"
     payload["error"] = f"unsupported monitor backend: {backend}"
-    return finish(1)
+    return finish(2)
 
 
 def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
@@ -1847,8 +1947,8 @@ def build_parser() -> argparse.ArgumentParser:
     recover.add_argument("manifest", metavar="MANIFEST.json", help="Delete recovery manifest JSON")
     recover.add_argument("--dry-run", action="store_true", help="Preview recovery without changing ini entries")
     recover.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
-    monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    monitor.add_argument("target", nargs="?", default="router", choices=["router"], help="Monitor target; currently: router")
+    monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs and discover endpoints without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    monitor.add_argument("target", nargs="?", default="router", choices=["router", "discover"], help="Monitor target; currently: router or discover")
     monitor.add_argument("--follow", action="store_true", help="Follow logs when the configured backend supports it")
     monitor.add_argument("--lines", type=int, default=80, help="Number of recent log lines to show when supported")
     monitor.add_argument("--json", action="store_true", help="Emit JSON monitor metadata and log lines")
