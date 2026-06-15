@@ -100,9 +100,9 @@ ctx-size = 8192
 
             doctor = self.run_modelctl("--config", str(config), "doctor")
             self.assertEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
-            self.assertIn("OK router ini readable", doctor.stdout)
-            self.assertIn("OK aliases detected: 3", doctor.stdout)
-            self.assertIn("OK registry writable", doctor.stdout)
+            self.assertIn("router_ini:", doctor.stdout)
+            self.assertIn("aliases (3)", doctor.stdout)
+            self.assertIn("registry_writable:", doctor.stdout)
 
             show = self.run_modelctl("--config", str(config), "show", "1")
             self.assertEqual(show.returncode, 0, show.stderr + show.stdout)
