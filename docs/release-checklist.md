@@ -31,6 +31,7 @@ Use this checklist before every release to ensure quality and safety.
 ## Release Notes
 
 - [ ] Draft release notes documenting changes
+- [ ] Generate or update `docs/release-readiness-report.md` for the branch
 - [ ] Verify tag naming convention
 - [ ] Update changelog if applicable
 
