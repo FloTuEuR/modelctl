@@ -135,6 +135,86 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assertEqual(payload["data"]["lines_requested"], 2)
             self.assertEqual(payload["data"]["lines"], ["beta", "gamma"])
 
+    def test_show_json_envelope_for_model_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "show", "1", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "show")
+            self.assertIsNone(payload["error"])
+            self.assertIn("target", payload["data"])
+            self.assertIn("resolved_target", payload["data"])
+            self.assertIn("model", payload["data"])
+            model = payload["data"]["model"]
+            self.assertIn("path", model)
+            self.assertIn("state", model)
+            self.assertIn("location", model)
+            self.assertIn("aliases", model)
+            self.assertIsInstance(model["aliases"], list)
+            self.assertIn("guidance", model)
+
+    def test_show_json_envelope_for_alias_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "show", "alias:sample", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "show")
+            self.assertIsNone(payload["error"])
+            self.assertIn("target", payload["data"])
+            self.assertIn("resolved_target", payload["data"])
+            self.assertIn("alias", payload["data"])
+            alias = payload["data"]["alias"]
+            self.assertIn("section", alias)
+            self.assertIn("state", alias)
+            self.assertIn("enabled", alias)
+            self.assertIn("model_path", alias)
+
+    def test_show_json_error_envelope_for_unresolvable_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "show", "nonexistent", "--json")
+            self.assertNotEqual(result.returncode, 0)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "show", status="error")
+            self.assertEqual(payload["error"]["code"], "target_not_found")
+            self.assertEqual(payload["data"], {})
+
+    def test_aliases_json_envelope_for_model_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "aliases", "1", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "aliases")
+            self.assertIsNone(payload["error"])
+            self.assertIn("target", payload["data"])
+            self.assertIn("resolved_target", payload["data"])
+            self.assertIn("model_path", payload["data"])
+            self.assertIn("aliases", payload["data"])
+            self.assertIsInstance(payload["data"]["aliases"], list)
+            if payload["data"]["aliases"]:
+                alias = payload["data"]["aliases"][0]
+                self.assertIn("section", alias)
+                self.assertIn("state", alias)
+                self.assertIn("enabled", alias)
+
+    def test_aliases_json_error_envelope_for_unresolvable_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "aliases", "nonexistent", "--json")
+            self.assertNotEqual(result.returncode, 0)
+
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "aliases", status="error")
+            self.assertEqual(payload["error"]["code"], "target_not_found")
+            self.assertEqual(payload["data"], {})
+
     def test_human_list_output_is_preserved(self):
         with tempfile.TemporaryDirectory() as td:
             _root, _router_ini, config, _registry = self.make_fixture(td)

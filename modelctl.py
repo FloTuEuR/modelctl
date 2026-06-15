@@ -730,10 +730,58 @@ def cmd_show(args: argparse.Namespace, config: configparser.ConfigParser) -> int
         aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
         key = _hf_key_for_alias(aliases[0]) if aliases else None
         hf_state = _load_json(_state_dir() / 'hf-status.json') or {}
-        _print_model_details(imported, model_path, gpu_vram_bytes=_gpu_vram_bytes(args), benchmark=_load_json(_benchmark_file(config, model_path)), hf_status=hf_state.get(key) if key else None)
+        benchmark = _load_json(_benchmark_file(config, model_path))
+        gpu_vram_bytes = _gpu_vram_bytes(args)
+        if getattr(args, "json", False):
+            model = next((m for m in imported.get("models", []) if m["path"] == model_path), None)
+            guidance = _estimate_model_guidance(
+                model,
+                gpu_vram_bytes=gpu_vram_bytes,
+                benchmark=benchmark,
+                hf_status=hf_state.get(key) if key else None,
+            )
+            aliases_data = [
+                {
+                    "section": a["section"],
+                    "state": "enabled" if a.get("enabled") else "disabled",
+                    "enabled": bool(a.get("enabled")),
+                }
+                for a in aliases
+            ]
+            model_data = {}
+            if model:
+                model_data.update(
+                    path=model_path,
+                    state=model["state"],
+                    location=model.get("location", "active"),
+                    size_bytes=model.get("size_bytes"),
+                )
+            model_data["aliases"] = aliases_data
+            model_data["guidance"] = guidance
+            _print_json(_json_envelope("show", {
+                "target": args.target,
+                "resolved_target": model_path,
+                "model": model_data,
+            }))
+            return 0
+        _print_model_details(imported, model_path, gpu_vram_bytes=gpu_vram_bytes, benchmark=benchmark, hf_status=hf_state.get(key) if key else None)
         return 0
     alias = _resolve_alias_target(imported, args.target)
     if alias:
+        if getattr(args, "json", False):
+            state = "enabled" if alias.get("enabled") else "disabled"
+            _print_json(_json_envelope("show", {
+                "target": args.target,
+                "resolved_target": alias["section"],
+                "alias": {
+                    "section": alias["section"],
+                    "state": state,
+                    "enabled": bool(alias.get("enabled")),
+                    "model_path": alias["model_path"],
+                    "params": alias.get("params", {}),
+                },
+            }))
+            return 0
         state = "enabled" if alias.get("enabled") else "disabled"
         print("Alias")
         print(f"  section: {alias['section']}")
@@ -743,6 +791,9 @@ def cmd_show(args: argparse.Namespace, config: configparser.ConfigParser) -> int
         for key, value in sorted(alias.get("params", {}).items()):
             print(f"    {key}: {value}")
         return 0
+    if getattr(args, "json", False):
+        _print_json(_json_envelope("show", status="error", error={"code": "target_not_found", "message": f"Could not resolve target: {args.target}"}))
+        return 2
     print(f"Could not resolve target: {args.target}", file=sys.stderr)
     print("Try: modelctl list", file=sys.stderr)
     return 2
@@ -752,10 +803,29 @@ def cmd_aliases(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     imported = _import_from_config(config)
     model_path = _resolve_model_target(imported, args.target)
     if model_path is None:
+        if getattr(args, "json", False):
+            _print_json(_json_envelope("aliases", status="error", error={"code": "target_not_found", "message": f"Could not resolve model target: {args.target}"}))
+            return 2
         print(f"Could not resolve model target: {args.target}", file=sys.stderr)
         print("Try: modelctl list", file=sys.stderr)
         return 2
     aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
+    if getattr(args, "json", False):
+        aliases_data = [
+            {
+                "section": a["section"],
+                "state": "enabled" if a.get("enabled") else "disabled",
+                "enabled": bool(a.get("enabled")),
+            }
+            for a in aliases
+        ]
+        _print_json(_json_envelope("aliases", {
+            "target": args.target,
+            "resolved_target": model_path,
+            "model_path": model_path,
+            "aliases": aliases_data,
+        }))
+        return 0
     print(f"Aliases for {model_path}")
     for alias in aliases:
         state = "enabled" if alias.get("enabled") else "disabled"
@@ -1447,6 +1517,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("target", metavar="TARGET", help="Model or alias target; see formats below")
     show.add_argument("--gpu-vram-gib", type=float, help="Optional GPU VRAM size in GiB to estimate context and layer fit")
+    show.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     aliases = sub.add_parser(
         "aliases",
         help="List aliases for a model target",
@@ -1455,6 +1526,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     aliases.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, path:/models/model.gguf, or filename.gguf")
+    aliases.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     delete = sub.add_parser(
         "delete",
         help="Interactively delete a model file and remove aliases; --dry-run to preview",
