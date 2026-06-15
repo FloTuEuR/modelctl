@@ -117,15 +117,16 @@ ctx-size = 4096
             self.assertTrue(Path(result["router_ini_backup"]).exists())
             self.assertIn("original_ini_sha256", result)
 
-    def test_docs_name_hf_update_benchmark_and_settings_features_as_roadmap(self):
+    def test_docs_name_lifecycle_monitoring_and_benchmark_features_as_roadmap(self):
         docs = (ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
         for snippet in (
-            "Hugging Face download",
-            "up-to-date check",
-            "benchmark",
-            "suggest settings",
-            "hardware/config detection",
-            "not implemented in v0.1",
+            "archive",
+            "restore",
+            "delete",
+            "recover",
+            "monitor",
+            "Benchmark model files and runtime settings independently from aliases",
+            "Recommend good alias configurations for the current hardware and usage",
         ):
             self.assertIn(snippet, docs)
 

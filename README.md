@@ -64,7 +64,8 @@ Important defaults:
 
 - `setup`, `import`, `list`, `show`, `aliases`, and `doctor` do not modify your router ini.
 - `delete --dry-run` is an impact preview only; `delete TARGET` requires an interactive terminal and typed confirmation.
-- `archive`, `enable`, `disable`, `add-entry`, and `scan` apply real changes by default; use `--dry-run` when you want an impact preview instead.
+- `archive`, `restore`, `recover`, `enable`, `disable`, `add`, and `scan` are routine operations; use `--dry-run` where available when you want an impact preview instead.
+- `add-entry` is a temporary deprecated compatibility alias for `add`.
 - `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
 - Recovery plan JSON files contain local paths and should be treated as local operational metadata.
 
@@ -77,7 +78,7 @@ Today:
 - `benchmark TARGET` runs a real `llama-bench` invocation when available and persists results for later display in `show`.
 - `update-check TARGET` can persist Hugging Face freshness state when source repo/file metadata is known.
 - `enable` / `disable` apply real ini edits by default, with `--dry-run` available for preview.
-- `add-entry` now appends a real ini entry by default, with `--dry-run` available for preview.
+- `add` appends a real ini entry by default, with `--dry-run` available for preview.
 
 See [`docs/settings-rules.md`](docs/settings-rules.md) for the current recommendation/output targets: 20+ t/s, 65.5k good context, 128k+ ideal context, full VRAM fit, quality, and large-JSON robustness.
 

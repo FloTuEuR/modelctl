@@ -176,13 +176,23 @@ Examples:
   modelctl disable a2 --dry-run
 """
 
-ADD_ENTRY_HELP = """Create a new router ini entry with estimated best default flags/settings.
+ADD_HELP = """Create a new router ini entry with estimated best default flags/settings.
 
 Applies by default. Use --dry-run to preview the generated entry first.
 
 Examples:
+  modelctl add --alias my-model --model /path/to/model.gguf
+  modelctl add --alias my-model --model /path/to/model.gguf --dry-run
+"""
+
+ADD_ENTRY_HELP = """deprecated compatibility alias for `modelctl add`.
+
+Use `modelctl add` for new scripts and documentation. This temporary alias keeps
+older automation working while the command surface transitions.
+
+Examples:
+  modelctl add --alias my-model --model /path/to/model.gguf
   modelctl add-entry --alias my-model --model /path/to/model.gguf
-  modelctl add-entry --alias my-model --model /path/to/model.gguf --dry-run
 """
 
 BENCHMARK_HELP = """Benchmark a current model with llama.cpp and suggest settings.
@@ -210,6 +220,27 @@ Applies by default. Use --dry-run to preview the discovered entries first.
 Examples:
   modelctl scan
   modelctl scan --dry-run
+"""
+
+RESTORE_HELP = f"""Move archived model files back to active storage.
+
+{TARGET_HELP}This is the opposite of archive: it restores archived GGUF files to active storage
+and preserves unrelated router ini content. Implementation is staged after command
+surface alignment.
+"""
+
+RECOVER_HELP = """Recover aliases from a delete recovery manifest.
+
+Uses focused recovery manifest data to recreate only affected aliases/sections
+after the model file exists again, preserving unrelated router ini changes.
+Implementation is staged after delete manifest alignment.
+"""
+
+MONITOR_HELP = """Read-only router log abstraction.
+
+Reports or follows configured router logs without restarting, reloading, killing,
+or mutating anything. Supported design backends include systemd, file logs,
+containers, modelctl-managed logs, configured read-only commands, and none.
 """
 
 
@@ -1050,6 +1081,29 @@ def cmd_scan(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     return 0
 
 
+def cmd_restore(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    print("Restore archived model")
+    print("status: not implemented yet")
+    print("next: archive/restore implementation will move archived GGUF files back to active storage")
+    return 1
+
+
+def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    print("Recover aliases from delete recovery manifest")
+    print("status: not implemented yet")
+    print("next: delete/recover implementation will restore only affected aliases/sections")
+    return 1
+
+
+def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    backend = config.get("monitor", "backend", fallback="none")
+    print("Router monitor")
+    print(f"  backend: {backend}")
+    print("  mode: read-only")
+    print("  status: monitor backend execution is not implemented yet")
+    return 0
+
+
 def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     print("Outcome rules for model/settings recommendations")
     print("  speed: 20+ t/s target")
@@ -1153,15 +1207,29 @@ def build_parser() -> argparse.ArgumentParser:
     disable = sub.add_parser("disable", help="Disable an alias in the router ini", description="Disable an alias in the router ini.", epilog=DISABLE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     disable.add_argument("target", metavar="ALIAS", help="Alias target, e.g. a2 or alias:my-model")
     disable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
-    add_entry = sub.add_parser("add-entry", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add = sub.add_parser("add", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add.add_argument("--alias", required=True, help="Router alias/section name to create")
+    add.add_argument("--model", required=True, help="GGUF model path for the new entry")
+    add.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+    add_entry = sub.add_parser("add-entry", help="Deprecated alias for add", description="Deprecated compatibility alias for `modelctl add`.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
     add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
     add_entry.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+
     benchmark = sub.add_parser("benchmark", help="Benchmark a model with llama.cpp and suggest settings", description="Benchmark a current model with llama.cpp and suggest the most appropriate settings.", epilog=BENCHMARK_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     benchmark.add_argument("target", metavar="TARGET", help="Model target, e.g. 1 or alias:my-model")
     benchmark.add_argument("--prompt-set", default="smoke", help="Prompt set to run; default: smoke")
     scan = sub.add_parser("scan", help="Scan for manually added GGUFs not yet in the ini", description="Scan the models folder for GGUF files not yet referenced by the router ini.", epilog=SCAN_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     scan.add_argument("--dry-run", action="store_true", help="Preview discovered entries without appending anything")
+    restore = sub.add_parser("restore", help="Restore archived model files to active storage", description="Move archived model files back to active storage.", epilog=RESTORE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    restore.add_argument("target", metavar="TARGET", help="Archived model target; e.g. 1, path:/archive/model.gguf, or filename.gguf")
+    restore.add_argument("--dry-run", action="store_true", help="Preview restore without changing files or ini entries")
+    recover = sub.add_parser("recover", help="Recover aliases from a delete recovery manifest", description="Recover affected aliases/sections from focused delete recovery metadata.", epilog=RECOVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    recover.add_argument("manifest", metavar="MANIFEST.json", help="Delete recovery manifest JSON")
+    recover.add_argument("--dry-run", action="store_true", help="Preview recovery without changing ini entries")
+    monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    monitor.add_argument("--follow", action="store_true", help="Follow logs when the configured backend supports it")
+    monitor.add_argument("--lines", type=int, default=80, help="Number of recent log lines to show when supported")
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     return parser
 
@@ -1193,12 +1261,18 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_enable_disable(args, config, True)
     if args.command == "disable":
         return cmd_enable_disable(args, config, False)
-    if args.command == "add-entry":
+    if args.command in {"add", "add-entry"}:
         return cmd_add_entry(args, config)
     if args.command == "benchmark":
         return cmd_benchmark(args, config)
     if args.command == "scan":
         return cmd_scan(args, config)
+    if args.command == "restore":
+        return cmd_restore(args, config)
+    if args.command == "recover":
+        return cmd_recover(args, config)
+    if args.command == "monitor":
+        return cmd_monitor(args, config)
     if args.command == "rules":
         return cmd_rules(args, config)
     parser.error(f"Unhandled command: {args.command}")
