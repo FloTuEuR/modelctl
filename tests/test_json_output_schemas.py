@@ -579,6 +579,100 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assert_envelope(payload, "delete", status="error")
             self.assertEqual(payload["error"]["code"], "target_not_found")
 
+    def _make_two_model_fixture(self, td: str):
+        root = Path(td)
+        models = root / "models"
+        models.mkdir()
+        m1 = models / "alpha.Q4_K_M.gguf"
+        m1.write_bytes(b"alpha")
+        m2 = models / "beta.Q4_K_M.gguf"
+        m2.write_bytes(b"beta")
+        ini = root / "router.ini"
+        ini.write_text(
+            f"[alpha]\nmodel = {m1}\nctx-size = 4096\n"
+            f"[beta]\nmodel = {m2}\nctx-size = 4096\n"
+            f"#[beta-disabled]\n#model = {m2}\n#ctx-size = 4096\n",
+            encoding="utf-8",
+        )
+        cfg = root / "config" / "modelctl.ini"
+        cfg.parent.mkdir()
+        cfg.write_text(
+            f"[router]\nini = {ini}\n"
+            f"[models]\ndownload_dir = {models}\n"
+            f"[monitor]\nbackend = none\n",
+            encoding="utf-8",
+        )
+        reg = root / "data" / "modelctl.yaml"
+        setup = self.run_modelctl("setup", str(ini), "--config", str(cfg), "--registry", str(reg))
+        self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
+        return root, ini, cfg, reg, m1, m2
+
+    def test_list_json_active_filter_applied(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--json", "--active")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "list")
+            self.assertIn("filters_applied", payload["data"])
+            self.assertEqual(payload["data"]["filters_applied"], {"active": True})
+            self.assertEqual(len(payload["data"]["models"]), 2)
+
+    def test_list_json_archived_filter_applied(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--json", "--archived")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "list")
+            self.assertIn("filters_applied", payload["data"])
+            self.assertEqual(payload["data"]["filters_applied"], {"archived": True})
+            self.assertEqual(len(payload["data"]["models"]), 0)
+
+    def test_list_json_enabled_filter_applied(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--json", "--enabled")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "list")
+            self.assertIn("filters_applied", payload["data"])
+            self.assertEqual(payload["data"]["filters_applied"], {"enabled": True})
+            self.assertEqual(len(payload["data"]["aliases"]), 2)
+
+    def test_list_json_disabled_filter_applied(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--json", "--disabled")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "list")
+            self.assertIn("filters_applied", payload["data"])
+            self.assertEqual(payload["data"]["filters_applied"], {"disabled": True})
+            self.assertEqual(len(payload["data"]["aliases"]), 1)
+
+    def test_list_no_filters_no_filters_applied_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assertNotIn("filters_applied", payload["data"])
+
+    def test_list_invalid_active_archived_combination(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--active", "--archived")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Cannot combine", result.stderr)
+
+    def test_list_invalid_enabled_disabled_combination(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            result = self.run_modelctl("--config", str(config), "list", "--enabled", "--disabled")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Cannot combine", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

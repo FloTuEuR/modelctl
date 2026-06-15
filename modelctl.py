@@ -538,10 +538,35 @@ def _print_list(imported: dict[str, Any]) -> None:
 
 def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
+    show_active = getattr(args, "active", False)
+    show_archived = getattr(args, "archived", False)
+    show_enabled = getattr(args, "enabled", False)
+    show_disabled = getattr(args, "disabled", False)
+    if show_active and show_archived:
+        print("Cannot combine --active and --archived", file=sys.stderr)
+        return 2
+    if show_enabled and show_disabled:
+        print("Cannot combine --enabled and --disabled", file=sys.stderr)
+        return 2
+    filters_applied: dict[str, bool] = {}
+    models = imported.get("models", [])
+    if show_active:
+        models = [m for m in models if m.get("location", "active") == "active"]
+        filters_applied["active"] = True
+    elif show_archived:
+        models = [m for m in models if m.get("location") == "archived"]
+        filters_applied["archived"] = True
+    aliases_data = imported.get("aliases", [])
+    if show_enabled:
+        aliases_data = [a for a in aliases_data if a.get("enabled")]
+        filters_applied["enabled"] = True
+    elif show_disabled:
+        aliases_data = [a for a in aliases_data if not a.get("enabled")]
+        filters_applied["disabled"] = True
     if getattr(args, "json", False):
-        models = []
-        for idx, model in enumerate(imported.get("models", []), start=1):
-            models.append({
+        model_list = []
+        for idx, model in enumerate(models, start=1):
+            model_list.append({
                 "id": idx,
                 "path": model.get("path"),
                 "state": model.get("state"),
@@ -549,17 +574,21 @@ def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int
                 "size_bytes": model.get("size_bytes"),
                 "aliases": list(model.get("aliases", [])),
             })
-        aliases = []
-        for idx, alias in enumerate(imported.get("aliases", []), start=1):
-            aliases.append({
+        alias_list = []
+        for idx, alias in enumerate(aliases_data, start=1):
+            alias_list.append({
                 "id": f"a{idx}",
                 "section": alias.get("section"),
                 "enabled": bool(alias.get("enabled")),
                 "model_path": alias.get("model_path"),
             })
-        _print_json(_json_envelope("list", {"models": models, "aliases": aliases}))
+        data: dict[str, Any] = {"models": model_list, "aliases": alias_list}
+        if filters_applied:
+            data["filters_applied"] = filters_applied
+        _print_json(_json_envelope("list", data))
         return 0
-    _print_list(imported)
+    filtered_imported = dict(imported, models=models, aliases=aliases_data)
+    _print_list(filtered_imported)
     return 0
 
 
@@ -1729,6 +1758,10 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     list_cmd.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    list_cmd.add_argument("--active", action="store_true", help="Show only active models")
+    list_cmd.add_argument("--archived", action="store_true", help="Show only archived models")
+    list_cmd.add_argument("--enabled", action="store_true", help="Show only enabled aliases")
+    list_cmd.add_argument("--disabled", action="store_true", help="Show only disabled aliases")
     show = sub.add_parser(
         "show",
         help="Show details for a model or alias target",
