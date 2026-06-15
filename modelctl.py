@@ -35,13 +35,37 @@ import json
 DEFAULT_CONFIG = Path.home() / ".config" / "modelctl" / "config.ini"
 
 
+def _xdg_dir(env_name: str, default_relative: str) -> Path:
+    configured = os.environ.get(env_name)
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home().joinpath(*default_relative.split("/")).expanduser()
+
+
+def _config_dir() -> Path:
+    return _xdg_dir("MODELCTL_CONFIG_DIR", ".config/modelctl")
+
+
+def _data_dir() -> Path:
+    return _xdg_dir("MODELCTL_DATA_DIR", ".local/share/modelctl")
+
+
 def _state_dir() -> Path:
-    return Path(os.environ.get("MODELCTL_STATE_DIR", Path.home() / ".local" / "state" / "modelctl")).expanduser()
+    return _xdg_dir("MODELCTL_STATE_DIR", ".local/state/modelctl")
+
+
+def _cache_dir() -> Path:
+    return _xdg_dir("MODELCTL_CACHE_DIR", ".cache/modelctl")
+
+
+def _recovery_dir(config: configparser.ConfigParser | None = None) -> Path:
+    configured = config.get("state", "recovery_dir", fallback=None) if config is not None else None
+    return Path(configured).expanduser() if configured else _state_dir() / "recovery"
 
 
 def _benchmark_dir(config: configparser.ConfigParser) -> Path:
     configured = config.get("state", "benchmark_dir", fallback=None)
-    return Path(configured).expanduser() if configured else _state_dir() / "benchmarks"
+    return Path(configured).expanduser() if configured else _data_dir() / "benchmarks"
 
 
 def _benchmark_file(config: configparser.ConfigParser, model_path: str) -> Path:
@@ -733,6 +757,12 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
             print(f"WARN download dir missing: {p}")
     else:
         print("WARN download dir unknown")
+    print(f"OK config dir: {_config_dir()}")
+    print(f"OK data dir: {_data_dir()}")
+    print(f"OK state dir: {_state_dir()}")
+    print(f"OK cache dir: {_cache_dir()}")
+    print(f"OK recovery dir: {_recovery_dir(config)}")
+    print(f"OK benchmark dir: {_benchmark_dir(config)}")
     print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/apply commands accept --dry-run previews when you want smoke-test behavior.")
     return exit_code
 
@@ -782,7 +812,7 @@ def cmd_delete(args: argparse.Namespace, config: configparser.ConfigParser) -> i
     if not getattr(args, "apply", False) and not _confirm_delete_interactively(plan):
         print("Delete cancelled. No files or ini entries were changed.")
         return 1
-    manifest_path = _default_recovery_path(args.config)
+    manifest_path = _default_recovery_path(args.config, config)
     try:
         result = apply_delete_plan(plan, manifest_path=manifest_path)
     except Exception as exc:
@@ -795,12 +825,12 @@ def cmd_delete(args: argparse.Namespace, config: configparser.ConfigParser) -> i
 
 def _default_plan_path(config_path: str, prefix: str = "archive") -> Path:
     stamp = _utc_now().replace(":", "").replace("-", "")
-    return Path(config_path).expanduser().with_name("plans") / f"{prefix}-{stamp}.json"
+    return _state_dir() / "plans" / f"{prefix}-{stamp}.json"
 
 
-def _default_recovery_path(config_path: str, prefix: str = "delete") -> Path:
+def _default_recovery_path(config_path: str, config: configparser.ConfigParser | None = None, prefix: str = "delete") -> Path:
     stamp = _utc_now().replace(":", "").replace("-", "")
-    return Path(config_path).expanduser().with_name("recovery") / f"{prefix}-{stamp}.json"
+    return _recovery_dir(config) / f"{prefix}-{stamp}.json"
 
 
 def _print_archive_plan(plan: dict[str, Any], dry_run: bool) -> None:
@@ -1095,9 +1125,11 @@ def cmd_scan(args: argparse.Namespace, config: configparser.ConfigParser) -> int
 def _archive_metadata_dirs(config_path: str) -> list[Path]:
     config_file = Path(config_path).expanduser()
     dirs = [config_file.with_name("plans")]
-    state_dir = _state_dir() / "archive"
-    if state_dir not in dirs:
-        dirs.append(state_dir)
+    state_plans = _state_dir() / "plans"
+    state_archive = _state_dir() / "archive"
+    for directory in (state_plans, state_archive):
+        if directory not in dirs:
+            dirs.append(directory)
     return dirs
 
 
@@ -1213,12 +1245,62 @@ def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> 
 
 
 def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
-    backend = config.get("monitor", "backend", fallback="none")
-    print("Router monitor")
-    print(f"  backend: {backend}")
-    print("  mode: read-only")
-    print("  status: monitor backend execution is not implemented yet")
-    return 0
+    target = getattr(args, "target", "router")
+    backend = config.get("monitor", "backend", fallback="none").strip().lower() or "none"
+    lines_requested = max(int(getattr(args, "lines", 80) or 80), 0)
+    follow = bool(getattr(args, "follow", False))
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {
+        "target": target,
+        "backend": backend,
+        "follow": follow,
+        "lines_requested": lines_requested,
+        "mode": "read-only",
+        "status": "error",
+        "lines": [],
+    }
+
+    def finish(code: int) -> int:
+        if as_json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            if code == 0:
+                print("Router monitor")
+                print(f"  target: {payload['target']}")
+                print(f"  backend: {payload['backend']}")
+                print(f"  mode: {payload['mode']}")
+                print(f"  status: {payload['status']}")
+                for line in payload.get("lines", []):
+                    print(line)
+            else:
+                print(str(payload.get("error") or "monitor failed"), file=sys.stderr)
+        return code
+
+    if target != "router":
+        payload["error"] = f"unsupported monitor target: {target}"
+        return finish(2)
+    if backend == "none":
+        payload["error"] = "monitor backend is not configured; add [monitor] backend = file and log_file = /path/to/router.log"
+        return finish(1)
+    if backend == "file":
+        log_value = config.get("monitor", "log_file", fallback="").strip()
+        if not log_value:
+            payload["error"] = "monitor file backend requires [monitor] log_file"
+            return finish(1)
+        log_file = Path(log_value).expanduser()
+        payload["log_file"] = str(log_file)
+        if not log_file.exists() or not log_file.is_file():
+            payload["error"] = f"monitor log file not found: {log_file}"
+            return finish(1)
+        text_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        payload["lines"] = text_lines[-lines_requested:] if lines_requested else []
+        payload["status"] = "ok"
+        return finish(0)
+    if backend in {"systemd", "docker", "container", "modelctl", "command"}:
+        payload["error"] = f"monitor backend '{backend}' is configured but execution is not implemented in this read-only foundation"
+        return finish(1)
+    payload["error"] = f"unsupported monitor backend: {backend}"
+    return finish(1)
 
 
 def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
@@ -1347,8 +1429,10 @@ def build_parser() -> argparse.ArgumentParser:
     recover.add_argument("manifest", metavar="MANIFEST.json", help="Delete recovery manifest JSON")
     recover.add_argument("--dry-run", action="store_true", help="Preview recovery without changing ini entries")
     monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    monitor.add_argument("target", nargs="?", default="router", choices=["router"], help="Monitor target; currently: router")
     monitor.add_argument("--follow", action="store_true", help="Follow logs when the configured backend supports it")
     monitor.add_argument("--lines", type=int, default=80, help="Number of recent log lines to show when supported")
+    monitor.add_argument("--json", action="store_true", help="Emit JSON monitor metadata and log lines")
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     return parser
 

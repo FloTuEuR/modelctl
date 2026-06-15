@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,10 @@ SCRIPT = ROOT / "modelctl.py"
 
 class DeleteRecoverTests(unittest.TestCase):
     def run_modelctl(self, *args, input_text=None):
+        env = os.environ.copy()
+        config_arg = args[1] if len(args) >= 2 and args[0] == "--config" else None
+        if config_arg:
+            env["MODELCTL_STATE_DIR"] = str(Path(config_arg).parent / "state")
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
             cwd=ROOT,
@@ -20,6 +25,7 @@ class DeleteRecoverTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            env=env,
         )
 
     def make_fixture(self, td: str):
@@ -50,7 +56,7 @@ ctx-size = 8192
         return root, models, router_ini, original, config, doomed, keeper
 
     def recovery_manifests(self, config: Path):
-        return sorted((config.parent / "recovery").glob("delete-*.json"))
+        return sorted((config.parent / "state" / "recovery").glob("delete-*.json"))
 
     def test_delete_requires_confirmation_or_apply(self):
         with tempfile.TemporaryDirectory() as td:
