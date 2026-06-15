@@ -278,6 +278,122 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assertIsNone(payload["data"]["metadata_path"])
             self.assertIn("warnings", payload)
 
+    def _archive_model(self, config, target="1"):
+        result = self.run_modelctl("--config", str(config), "archive", target)
+        self.assertEqual(result.returncode, 0, f"archive apply failed: {result.stderr + result.stdout}")
+        return result
+
+    def test_restore_dry_run_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            self._archive_model(config, "1")
+            result = self.run_modelctl("--config", str(config), "restore", "1", "--dry-run", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "restore")
+            self.assertIsNone(payload["error"])
+            self.assertIs(payload["data"]["dry_run"], True)
+            self.assertIs(payload["data"]["would_move_file"], False)
+            self.assertIs(payload["data"]["would_update_ini"], False)
+            self.assertIn("archive_path", payload["data"])
+            self.assertIn("source_path", payload["data"])
+            self.assertIn("active_path", payload["data"])
+            self.assertIn("restore_path", payload["data"])
+            self.assertIn("target", payload["data"])
+            self.assertIsInstance(payload["data"]["planned_changes"], list)
+            self.assertTrue(len(payload["data"]["planned_changes"]) > 0)
+
+    def test_delete_dry_run_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "delete", "1", "--dry-run", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "delete")
+            self.assertIsNone(payload["error"])
+            self.assertIn("target", payload["data"])
+            self.assertIn("model_path", payload["data"])
+            self.assertIs(payload["data"]["dry_run"], True)
+            self.assertIs(payload["data"]["would_delete_file"], False)
+            self.assertIs(payload["data"]["would_update_ini"], False)
+            self.assertIs(payload["data"]["would_write_recovery_manifest"], False)
+            self.assertIs(payload["data"]["delete_requires_apply"], True)
+            self.assertIn("affected_aliases", payload["data"])
+            self.assertIn("affected_sections", payload["data"])
+            self.assertIn("planned_recovery_manifest_path", payload["data"])
+            self.assertIsInstance(payload["data"]["planned_changes"], list)
+            self.assertTrue(len(payload["data"]["planned_changes"]) > 0)
+
+    def _state_env(self, config):
+        state_dir = str(Path(config).parent / "state")
+        return {"MODELCTL_STATE_DIR": state_dir}
+
+    def _recovery_manifests(self, config):
+        state_dir = Path(config).parent / "state"
+        return sorted(state_dir.glob("recovery/delete-*.json"))
+
+    def test_recover_dry_run_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            model_path = _root / "models" / "sample.Q4_K_M.gguf"
+            env = self._state_env(config)
+            delete_result = self.run_modelctl("--config", str(config), "delete", f"path:{model_path}", "--apply", env=env)
+            self.assertEqual(delete_result.returncode, 0, delete_result.stderr + delete_result.stdout)
+            manifests = self._recovery_manifests(config)
+            self.assertEqual(len(manifests), 1, f"no manifests in {config.parent / 'state' / 'recovery'}")
+            manifest = manifests[0]
+            model_path.write_bytes(b"sample")
+            result = self.run_modelctl("--config", str(config), "recover", str(manifest), "--dry-run", "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "recover")
+            self.assertIsNone(payload["error"])
+            self.assertIn("recovery_manifest_path", payload["data"])
+            self.assertIs(payload["data"]["dry_run"], True)
+            self.assertIs(payload["data"]["would_update_ini"], False)
+            self.assertIn("model_path", payload["data"])
+            self.assertIn("affected_aliases", payload["data"])
+            self.assertIn("affected_sections", payload["data"])
+            self.assertIn("conflict_status", payload["data"])
+            self.assertIn("has_conflicts", payload["data"]["conflict_status"])
+            self.assertIn("conflicting_sections", payload["data"]["conflict_status"])
+            self.assertIsInstance(payload["data"]["planned_changes"], list)
+
+    def test_human_restore_dry_run_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            self._archive_model(config, "1")
+            result = self.run_modelctl("--config", str(config), "restore", "1", "--dry-run")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("DRY RUN", result.stdout)
+            self.assertIn("No files or ini entries were changed", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_human_delete_dry_run_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "delete", "1", "--dry-run")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("DRY RUN", result.stdout)
+            self.assertIn("No files or ini entries were changed", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_human_recover_dry_run_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            model_path = _root / "models" / "sample.Q4_K_M.gguf"
+            env = self._state_env(config)
+            delete_result = self.run_modelctl("--config", str(config), "delete", f"path:{model_path}", "--apply", env=env)
+            self.assertEqual(delete_result.returncode, 0, delete_result.stderr + delete_result.stdout)
+            manifests = self._recovery_manifests(config)
+            self.assertEqual(len(manifests), 1)
+            manifest = manifests[0]
+            model_path.write_bytes(b"sample")
+            result = self.run_modelctl("--config", str(config), "recover", str(manifest), "--dry-run", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("DRY RUN", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
     def test_human_add_dry_run_is_preserved(self):
         with tempfile.TemporaryDirectory() as td:
             _root, _router_ini, config, _registry = self.make_fixture(td)

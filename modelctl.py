@@ -952,6 +952,24 @@ def cmd_delete(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         return 2
     plan = plan_delete_model(imported, model_path)
     if args.dry_run:
+        if getattr(args, "json", False):
+            alias_sections = [{"section": a["section"], "enabled": a.get("enabled")} for a in plan.get("aliases", [])]
+            planned_recovery = str(_default_recovery_path(args.config, config))
+            data: dict[str, Any] = {
+                "target": args.target,
+                "dry_run": True,
+                "model_path": model_path,
+                "affected_aliases": plan.get("aliases_impacted", []),
+                "affected_sections": plan.get("aliases_impacted", []),
+                "planned_recovery_manifest_path": planned_recovery,
+                "planned_changes": [f"delete {Path(model_path).name}"] + [f"remove alias [{s}]" for s in plan.get("aliases_impacted", [])],
+                "would_delete_file": False,
+                "would_update_ini": False,
+                "would_write_recovery_manifest": False,
+                "delete_requires_apply": True,
+            }
+            _print_json(_json_envelope("delete", data, warnings=plan.get("warnings")))
+            return 0
         _print_delete_plan(plan, dry_run=True)
         print("No files or ini entries were changed.")
         return 0
@@ -1405,6 +1423,31 @@ def _print_restore_plan(plan: dict[str, Any], dry_run: bool) -> None:
 def cmd_restore(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     plan = _restore_plan(config, args.config, args.target)
     if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            entry = plan["entries"][0]
+            data: dict[str, Any] = {
+                "target": args.target,
+                "dry_run": True,
+                "archive_path": entry["source"],
+                "source_path": entry["source"],
+                "active_path": entry["destination"],
+                "restore_path": entry["destination"],
+                "affected_aliases": [],
+                "planned_changes": [f"restore {Path(entry['source']).name} to active storage"],
+                "would_move_file": False,
+                "would_update_ini": False,
+            }
+            if entry.get("reenable_aliases"):
+                metadata = _find_archive_metadata(args.config, entry["source"])
+                if metadata:
+                    for me in metadata.get("entries", []):
+                        if me.get("destination") == entry["source"]:
+                            data["affected_aliases"] = me.get("aliases_impacted", [])
+                            break
+                if not data["affected_aliases"]:
+                    data["planned_changes"].append("re-enable aliases after restore")
+            _print_json(_json_envelope("restore", data, warnings=plan.get("warnings")))
+            return 0
         _print_restore_plan(plan, dry_run=True)
         print("No files or ini entries were changed. Re-run without --dry-run to restore.")
         return 0
@@ -1424,6 +1467,26 @@ def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> 
         print(f"recover failed safely: could not read recovery manifest: {manifest_path}", file=sys.stderr)
         return 1
     if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            model_path = manifest.get("deleted_model_path", "")
+            affected_aliases = [a.get("section") for a in manifest.get("affected_aliases", []) if a.get("section")]
+            affected_sections = [s.get("section") for s in manifest.get("affected_sections", []) if s.get("section")]
+            router_ini_path = Path(config.get("router", "ini")).expanduser()
+            imported = _import_from_config(config)
+            existing_sections = {a.get("section") for a in imported.get("aliases", [])}
+            conflicts = [s for s in affected_sections if s in existing_sections]
+            data: dict[str, Any] = {
+                "recovery_manifest_path": str(manifest_path),
+                "dry_run": True,
+                "model_path": model_path,
+                "affected_aliases": affected_aliases,
+                "affected_sections": affected_sections,
+                "planned_changes": [f"restore {len(affected_sections)} section(s) to router ini"],
+                "would_update_ini": False,
+                "conflict_status": {"has_conflicts": bool(conflicts), "conflicting_sections": conflicts},
+            }
+            _print_json(_json_envelope("recover", data, warnings=[]))
+            return 0
         print("DRY RUN: recover delete manifest")
         print(f"  manifest: {manifest_path}")
         print(f"  model: {manifest.get('deleted_model_path')}")
@@ -1587,6 +1650,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     delete.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, alias:my-model, path:/models/model.gguf, or filename.gguf")
     delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
+    delete.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     delete.add_argument("--apply", action="store_true", help="Explicitly apply destructive delete in non-interactive automation; writes recovery manifest first")
     archive = sub.add_parser(
         "archive",
@@ -1634,9 +1698,11 @@ def build_parser() -> argparse.ArgumentParser:
     restore = sub.add_parser("restore", help="Restore archived model files to active storage", description="Move archived model files back to active storage.", epilog=RESTORE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     restore.add_argument("target", metavar="TARGET", help="Archived model target; e.g. 1, path:/archive/model.gguf, or filename.gguf")
     restore.add_argument("--dry-run", action="store_true", help="Preview restore without changing files or ini entries")
+    restore.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     recover = sub.add_parser("recover", help="Recover aliases from a delete recovery manifest", description="Recover affected aliases/sections from focused delete recovery metadata.", epilog=RECOVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     recover.add_argument("manifest", metavar="MANIFEST.json", help="Delete recovery manifest JSON")
     recover.add_argument("--dry-run", action="store_true", help="Preview recovery without changing ini entries")
+    recover.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     monitor.add_argument("target", nargs="?", default="router", choices=["router"], help="Monitor target; currently: router")
     monitor.add_argument("--follow", action="store_true", help="Follow logs when the configured backend supports it")
