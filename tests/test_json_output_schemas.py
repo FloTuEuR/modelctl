@@ -420,6 +420,165 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assertIn("No files or ini entries were changed", result.stdout)
             self.assertNotIn('"status"', result.stdout)
 
+    def test_add_apply_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "add", "--alias", "my-model", "--model", "/some/path.gguf",
+                "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "add")
+            self.assertIsNone(payload["error"])
+            self.assertIs(payload["data"]["applied"], True)
+            self.assertIs(payload["data"]["dry_run"], False)
+            self.assertIn("alias", payload["data"])
+            self.assertIn("model_path", payload["data"])
+            self.assertIn("ini_path", payload["data"])
+
+    def test_add_human_apply_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "add", "--alias", "my-model", "--model", "/some/path.gguf",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("APPLIED", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_archive_apply_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "archive", "1",
+                "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "archive")
+            self.assertIsNone(payload["error"])
+            self.assertIs(payload["data"]["applied"], True)
+            self.assertIs(payload["data"]["dry_run"], False)
+            self.assertIn("moved", payload["data"])
+            self.assertIn("entries", payload["data"])
+            self.assertIn("affected_aliases", payload["data"])
+            self.assertIn("ini_path", payload["data"])
+            self.assertIn("metadata_path", payload["data"])
+            self.assertIsNotNone(payload["data"]["metadata_path"])
+
+    def test_archive_human_apply_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "archive", "1",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("APPLIED", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_restore_apply_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            self._archive_model(config, "1")
+            result = self.run_modelctl(
+                "--config", str(config),
+                "restore", "1",
+                "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "restore")
+            self.assertIsNone(payload["error"])
+            self.assertIs(payload["data"]["applied"], True)
+            self.assertIs(payload["data"]["dry_run"], False)
+            self.assertIn("restored", payload["data"])
+            self.assertIn("affected_aliases", payload["data"])
+            self.assertIn("ini_path", payload["data"])
+
+    def test_restore_human_apply_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            self._archive_model(config, "1")
+            result = self.run_modelctl(
+                "--config", str(config),
+                "restore", "1",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("APPLIED", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_recover_apply_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            model_path = _root / "models" / "sample.Q4_K_M.gguf"
+            env = self._state_env(config)
+            delete_result = self.run_modelctl("--config", str(config), "delete", f"path:{model_path}", "--apply", env=env)
+            self.assertEqual(delete_result.returncode, 0, delete_result.stderr + delete_result.stdout)
+            manifests = self._recovery_manifests(config)
+            self.assertEqual(len(manifests), 1)
+            manifest = manifests[0]
+            model_path.write_bytes(b"sample")
+            result = self.run_modelctl("--config", str(config), "recover", str(manifest), "--json", env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "recover")
+            self.assertIsNone(payload["error"])
+            self.assertIs(payload["data"]["applied"], True)
+            self.assertIs(payload["data"]["dry_run"], False)
+            self.assertIn("sections_restored", payload["data"])
+            self.assertIn("affected_aliases", payload["data"])
+            self.assertIn("ini_path", payload["data"])
+            self.assertIn("conflict_status", payload["data"])
+            self.assertIn("recovery_manifest_path", payload["data"])
+
+    def test_recover_human_apply_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            model_path = _root / "models" / "sample.Q4_K_M.gguf"
+            env = self._state_env(config)
+            delete_result = self.run_modelctl("--config", str(config), "delete", f"path:{model_path}", "--apply", env=env)
+            self.assertEqual(delete_result.returncode, 0, delete_result.stderr + delete_result.stdout)
+            manifests = self._recovery_manifests(config)
+            self.assertEqual(len(manifests), 1)
+            manifest = manifests[0]
+            model_path.write_bytes(b"sample")
+            result = self.run_modelctl("--config", str(config), "recover", str(manifest), env=env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("APPLIED", result.stdout)
+            self.assertNotIn('"status"', result.stdout)
+
+    def test_archive_json_error_envelope_when_target_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "archive", "--json")
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "archive", status="error")
+            self.assertEqual(payload["error"]["code"], "target_not_found")
+
+    def test_recover_json_error_envelope_when_manifest_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "recover", "/nonexistent/manifest.json", "--json")
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "recover", status="error")
+            self.assertEqual(payload["error"]["code"], "manifest_not_found")
+
+    def test_delete_json_error_envelope_when_target_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl("--config", str(config), "delete", "999", "--json")
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "delete", status="error")
+            self.assertEqual(payload["error"]["code"], "target_not_found")
+
 
 if __name__ == "__main__":
     unittest.main()
