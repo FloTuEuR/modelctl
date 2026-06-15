@@ -83,3 +83,10 @@ Potential future extension:
 - `--location active|archive|missing|all` could replace `--active`/`--archived`
 - `--alias-state enabled|disabled|all` could replace `--enabled`/`--disabled`
 
+
+
+## Related operational references
+
+- Stable JSON output: `docs/json-output.md`
+- Release readiness checklist: `docs/release-checklist.md`
+- Monitor discovery usage and safety: `docs/phase-6-monitor-discovery.md`

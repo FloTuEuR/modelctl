@@ -19,6 +19,7 @@ Use this checklist before every release to ensure quality and safety.
 ## Monitor Discovery
 
 - [ ] Monitor read-only smoke check - verify no mutation occurs
+- [ ] Monitor discovery smoke check - see `docs/phase-6-monitor-discovery.md`
 
 ## Code Review
 

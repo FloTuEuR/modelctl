@@ -58,7 +58,7 @@ The archive command:
 
 ## Safety notes
 
-Read [`docs/safety.md`](docs/safety.md) before using mutating commands.
+Read [`docs/safety.md`](docs/safety.md) before using mutating commands. For automation output, see [`docs/json-output.md`](docs/json-output.md). For release checks, see [`docs/release-checklist.md`](docs/release-checklist.md).
 
 Important defaults:
 
@@ -68,6 +68,10 @@ Important defaults:
 - `add-entry` is a temporary deprecated compatibility alias for `add`.
 - `benchmark` is not a dry-run command: it tries to run a real `llama-bench` invocation immediately and fails clearly if `llama-bench` is unavailable.
 - Recovery plan JSON files contain local paths and should be treated as local operational metadata.
+
+## Monitor discovery
+
+`modelctl monitor discover` performs read-only endpoint discovery for local OpenAI-compatible router/server endpoints. See [`docs/phase-6-monitor-discovery.md`](docs/phase-6-monitor-discovery.md).
 
 ## Roadmap and recommendation rules
 
