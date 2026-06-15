@@ -114,12 +114,17 @@ class StorageMonitorTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             payload = json.loads(result.stdout)
-            self.assertEqual(payload["backend"], "file")
-            self.assertEqual(payload["target"], "router")
-            self.assertFalse(payload["follow"])
-            self.assertEqual(payload["lines_requested"], 1)
             self.assertEqual(payload["status"], "ok")
-            self.assertEqual(payload["lines"], ["beta"])
+            self.assertEqual(payload["command"], "monitor")
+            self.assertEqual(payload["warnings"], [])
+            self.assertIsNone(payload["error"])
+            data = payload["data"]
+            self.assertEqual(data["backend"], "file")
+            self.assertEqual(data["target"], "router")
+            self.assertFalse(data["follow"])
+            self.assertEqual(data["lines_requested"], 1)
+            self.assertEqual(data["status"], "ok")
+            self.assertEqual(data["lines"], ["beta"])
 
 
 if __name__ == "__main__":

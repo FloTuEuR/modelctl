@@ -86,6 +86,27 @@ def _save_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _json_envelope(
+    command: str,
+    data: dict[str, Any] | None = None,
+    *,
+    status: str = "ok",
+    warnings: list[str] | None = None,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "command": command,
+        "data": data or {},
+        "warnings": warnings or [],
+        "error": error,
+    }
+
+
+def _print_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 EXAMPLES = """
 Examples:
   modelctl setup /path/to/models.ini                 # dry-run import preview
@@ -517,6 +538,27 @@ def _print_list(imported: dict[str, Any]) -> None:
 
 def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
+    if getattr(args, "json", False):
+        models = []
+        for idx, model in enumerate(imported.get("models", []), start=1):
+            models.append({
+                "id": idx,
+                "path": model.get("path"),
+                "state": model.get("state"),
+                "location": model.get("location", "active"),
+                "size_bytes": model.get("size_bytes"),
+                "aliases": list(model.get("aliases", [])),
+            })
+        aliases = []
+        for idx, alias in enumerate(imported.get("aliases", []), start=1):
+            aliases.append({
+                "id": f"a{idx}",
+                "section": alias.get("section"),
+                "enabled": bool(alias.get("enabled")),
+                "model_path": alias.get("model_path"),
+            })
+        _print_json(_json_envelope("list", {"models": models, "aliases": aliases}))
+        return 0
     _print_list(imported)
     return 0
 
@@ -725,16 +767,27 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
     router_ini = Path(config.get("router", "ini")).expanduser()
     registry = Path(config.get("state", "registry", fallback=str(Path(args.config).with_name("modelctl.yaml")))).expanduser()
     exit_code = 0
+    checks: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    def check(name: str, status: str, *, path: Path | str | None = None, detail: str | None = None) -> None:
+        item: dict[str, Any] = {"name": name, "status": status}
+        if path is not None:
+            item["path"] = str(path)
+        if detail is not None:
+            item["detail"] = detail
+        checks.append(item)
+
     if router_ini.exists() and router_ini.is_file():
-        print(f"OK router ini readable: {router_ini}")
+        check("router_ini", "ok", path=router_ini)
         imported = _import_from_config(config)
-        print(f"OK aliases detected: {len(imported['aliases'])}")
-        print(f"OK models detected: {len(imported['models'])}")
+        check("aliases", "ok", detail=str(len(imported["aliases"])))
+        check("models", "ok", detail=str(len(imported["models"])))
         archived_count = sum(1 for model in imported.get("models", []) if model.get("location") == "archived")
         if archived_count:
-            print(f"OK archived models detected: {archived_count}")
+            check("archived_models", "ok", detail=str(archived_count))
     else:
-        print(f"ERROR router ini missing: {router_ini}")
+        check("router_ini", "error", path=router_ini, detail="missing")
         imported = {"aliases": [], "models": []}
         exit_code = 1
 
@@ -743,26 +796,50 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         probe = registry.parent / ".modelctl-write-test"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        print(f"OK registry writable: {registry}")
+        check("registry_writable", "ok", path=registry)
     except OSError as exc:
-        print(f"ERROR registry not writable: {registry} ({exc})")
+        check("registry_writable", "error", path=registry, detail=str(exc))
         exit_code = 1
 
     download_dir = config.get("models", "download_dir", fallback=None) or imported.get("download_dir")
     if download_dir:
         p = Path(download_dir).expanduser()
         if p.exists() and p.is_dir():
-            print(f"OK download dir exists: {p}")
+            check("download_dir", "ok", path=p)
         else:
-            print(f"WARN download dir missing: {p}")
+            check("download_dir", "warning", path=p, detail="missing")
+            warnings.append("download_dir_missing")
     else:
-        print("WARN download dir unknown")
-    print(f"OK config dir: {_config_dir()}")
-    print(f"OK data dir: {_data_dir()}")
-    print(f"OK state dir: {_state_dir()}")
-    print(f"OK cache dir: {_cache_dir()}")
-    print(f"OK recovery dir: {_recovery_dir(config)}")
-    print(f"OK benchmark dir: {_benchmark_dir(config)}")
+        check("download_dir", "warning", detail="unknown")
+        warnings.append("download_dir_unknown")
+    paths = {
+        "config_dir": str(_config_dir()),
+        "data_dir": str(_data_dir()),
+        "state_dir": str(_state_dir()),
+        "cache_dir": str(_cache_dir()),
+        "recovery_dir": str(_recovery_dir(config)),
+        "benchmark_dir": str(_benchmark_dir(config)),
+    }
+    safety = {
+        "delete_requires_tty_confirmation": True,
+        "archive_apply_supports_dry_run": True,
+    }
+    if getattr(args, "json", False):
+        _print_json(_json_envelope(
+            "doctor",
+            {"checks": checks, "paths": paths, "safety": safety},
+            status="ok" if exit_code == 0 else "error",
+            warnings=warnings,
+            error={"code": "doctor_failed", "message": "one or more checks failed"} if exit_code else None,
+        ))
+        return exit_code
+    for item in checks:
+        status = item["status"].upper()
+        path = f": {item['path']}" if "path" in item else ""
+        detail = f" ({item['detail']})" if "detail" in item else ""
+        print(f"{status} {item['name']}{path}{detail}")
+    for name, value in paths.items():
+        print(f"OK {name.replace('_', ' ')}: {value}")
     print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/apply commands accept --dry-run previews when you want smoke-test behavior.")
     return exit_code
 
@@ -1262,7 +1339,11 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
 
     def finish(code: int) -> int:
         if as_json:
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            error = None
+            if code != 0:
+                error = {"code": "monitor_failed", "message": str(payload.get("error") or "monitor failed")}
+            data = {key: value for key, value in payload.items() if key != "error"}
+            _print_json(_json_envelope("monitor", data, status="ok" if code == 0 else "error", error=error))
         else:
             if code == 0:
                 print("Router monitor")
@@ -1341,20 +1422,22 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=IMPORT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub.add_parser(
+    doctor = sub.add_parser(
         "doctor",
         help="Check configured paths and current capabilities",
         description="Check configured paths, writable state, and safety capabilities.",
         epilog=DOCTOR_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub.add_parser(
+    doctor.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    list_cmd = sub.add_parser(
         "list",
         help="List detected models and aliases from configured router ini",
         description="List detected Models and Aliases from the configured router ini.",
         epilog=LIST_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    list_cmd.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     show = sub.add_parser(
         "show",
         help="Show details for a model or alias target",
