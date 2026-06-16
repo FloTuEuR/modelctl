@@ -42,7 +42,7 @@ class ProductionReadinessTests(unittest.TestCase):
             PRIVATE_MARKERS = sys.argv[2:]
             SKIP_DIRS = {'.git', '.github', '__pycache__', '.pytest_cache', '.venv', 'venv', 'private'}
             SCAN_SUFFIXES = {'.py', '.md', '.txt', '.toml', '.yml', '.yaml', '.ini', ''}
-            SKIP_FILES = {Path('tests/test_production_readiness.py')}
+            SKIP_FILES = {Path('tests/test_production_readiness.py'), Path('scripts/check_private_markers.py')}
 
             def should_scan(path: Path) -> bool:
                 rel = path.relative_to(ROOT)

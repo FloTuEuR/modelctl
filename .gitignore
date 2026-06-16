@@ -23,5 +23,6 @@ plans/
 # Private deployment notes/prompts; never publish
 private/
 
-# Local-only security scan helpers; never publish
-scripts/
+# Local-only helper outputs; keep the tracked CI privacy scanner publishable
+scripts/*
+!scripts/check_private_markers.py
