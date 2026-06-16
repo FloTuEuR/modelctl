@@ -91,7 +91,11 @@ ctx-size = 4096
             "update-check": ["Hugging Face", "update"],
             "enable": ["enable", "ini"],
             "disable": ["disable", "ini"],
-            "add-entry": ["entry", "estimated"],
+            "add": ["entry", "estimated"],
+            "add-entry": ["deprecated", "modelctl add"],
+            "restore": ["archived", "active storage"],
+            "recover": ["recovery manifest", "aliases"],
+            "monitor": ["read-only", "logs"],
             "benchmark": ["llama.cpp", "settings"],
             "rules": ["outcomes", "20+ t/s", "128k"],
         }

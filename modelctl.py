@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,8 @@ from typing import Any
 from modelctl_core import (
     apply_archive_plan,
     apply_delete_plan,
+    apply_restore_plan,
+    apply_recover_manifest,
     augment_with_scanned_files,
     detect_from_ini,
     infer_archive_dirs,
@@ -33,13 +37,37 @@ import json
 DEFAULT_CONFIG = Path.home() / ".config" / "modelctl" / "config.ini"
 
 
+def _xdg_dir(env_name: str, default_relative: str) -> Path:
+    configured = os.environ.get(env_name)
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home().joinpath(*default_relative.split("/")).expanduser()
+
+
+def _config_dir() -> Path:
+    return _xdg_dir("MODELCTL_CONFIG_DIR", ".config/modelctl")
+
+
+def _data_dir() -> Path:
+    return _xdg_dir("MODELCTL_DATA_DIR", ".local/share/modelctl")
+
+
 def _state_dir() -> Path:
-    return Path(os.environ.get("MODELCTL_STATE_DIR", Path.home() / ".modelctl")).expanduser()
+    return _xdg_dir("MODELCTL_STATE_DIR", ".local/state/modelctl")
+
+
+def _cache_dir() -> Path:
+    return _xdg_dir("MODELCTL_CACHE_DIR", ".cache/modelctl")
+
+
+def _recovery_dir(config: configparser.ConfigParser | None = None) -> Path:
+    configured = config.get("state", "recovery_dir", fallback=None) if config is not None else None
+    return Path(configured).expanduser() if configured else _state_dir() / "recovery"
 
 
 def _benchmark_dir(config: configparser.ConfigParser) -> Path:
     configured = config.get("state", "benchmark_dir", fallback=None)
-    return Path(configured).expanduser() if configured else _state_dir() / "benchmarks"
+    return Path(configured).expanduser() if configured else _data_dir() / "benchmarks"
 
 
 def _benchmark_file(config: configparser.ConfigParser, model_path: str) -> Path:
@@ -60,6 +88,27 @@ def _save_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _json_envelope(
+    command: str,
+    data: dict[str, Any] | None = None,
+    *,
+    status: str = "ok",
+    warnings: list[str] | None = None,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "command": command,
+        "data": data or {},
+        "warnings": warnings or [],
+        "error": error,
+    }
+
+
+def _print_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
 EXAMPLES = """
 Examples:
   modelctl setup /path/to/models.ini                 # dry-run import preview
@@ -70,7 +119,8 @@ Examples:
   modelctl aliases 1                                 # show aliases for a model
   modelctl delete 1 --dry-run                        # preview delete impact without changes
   modelctl delete 1                                  # interactive delete; removes aliases and file
-  modelctl archive 1                                 # move file and disable aliases
+  modelctl archive 1                                 # move file and preserve aliases
+  modelctl archive 1 --disable-aliases               # move file and disable directly linked aliases
   modelctl archive 1 --dry-run                       # preview archive impact
   modelctl archive --group lab                       # archive aliases under lab/testing section
 """
@@ -107,14 +157,16 @@ Examples:
   modelctl delete path:/models/model.gguf
 """
 
-ARCHIVE_HELP = f"""Moves model files to the archive tree and disables affected aliases.
+ARCHIVE_HELP = f"""Moves model files to the archive tree while preserving aliases by default.
 
-{TARGET_HELP}
-Examples:
-  modelctl archive 1                       # archive by model row number
-  modelctl archive alias:my-model          # archive by alias
+{TARGET_HELP}Examples:
+  modelctl archive 1                       # archive by model row number; preserve aliases
+  modelctl archive alias:my-model          # archive by alias; preserve aliases
+  modelctl archive 1 --disable-aliases     # also disable aliases directly linked to the model
   modelctl archive 1 --dry-run             # preview without changing files
   modelctl archive --group lab             # archive aliases detected under lab/testing headings
+
+Archive writes movement/recovery metadata for restore in modelctl-owned plan storage.
 """
 
 IMPORT_HELP = """Refresh modelctl's registry from the configured router ini.
@@ -176,13 +228,23 @@ Examples:
   modelctl disable a2 --dry-run
 """
 
-ADD_ENTRY_HELP = """Create a new router ini entry with estimated best default flags/settings.
+ADD_HELP = """Create a new router ini entry with estimated best default flags/settings.
 
 Applies by default. Use --dry-run to preview the generated entry first.
 
 Examples:
+  modelctl add --alias my-model --model /path/to/model.gguf
+  modelctl add --alias my-model --model /path/to/model.gguf --dry-run
+"""
+
+ADD_ENTRY_HELP = """deprecated compatibility alias for `modelctl add`.
+
+Use `modelctl add` for new scripts and documentation. This temporary alias keeps
+older automation working while the command surface transitions.
+
+Examples:
+  modelctl add --alias my-model --model /path/to/model.gguf
   modelctl add-entry --alias my-model --model /path/to/model.gguf
-  modelctl add-entry --alias my-model --model /path/to/model.gguf --dry-run
 """
 
 BENCHMARK_HELP = """Benchmark a current model with llama.cpp and suggest settings.
@@ -210,6 +272,27 @@ Applies by default. Use --dry-run to preview the discovered entries first.
 Examples:
   modelctl scan
   modelctl scan --dry-run
+"""
+
+RESTORE_HELP = f"""Move archived model files back to active storage.
+
+{TARGET_HELP}This is the opposite of archive: it restores archived GGUF files to active storage
+and preserves unrelated router ini content. Implementation is staged after command
+surface alignment.
+"""
+
+RECOVER_HELP = """Recover aliases from a delete recovery manifest.
+
+Uses focused recovery manifest data to recreate only affected aliases/sections
+after the model file exists again, preserving unrelated router ini changes.
+Implementation is staged after delete manifest alignment.
+"""
+
+MONITOR_HELP = """Read-only router log abstraction.
+
+Reports or follows configured router logs without restarting, reloading, killing,
+or mutating anything. Supported design backends include systemd, file logs,
+containers, modelctl-managed logs, configured read-only commands, and none.
 """
 
 
@@ -457,7 +540,57 @@ def _print_list(imported: dict[str, Any]) -> None:
 
 def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
-    _print_list(imported)
+    show_active = getattr(args, "active", False)
+    show_archived = getattr(args, "archived", False)
+    show_enabled = getattr(args, "enabled", False)
+    show_disabled = getattr(args, "disabled", False)
+    if show_active and show_archived:
+        print("Cannot combine --active and --archived", file=sys.stderr)
+        return 2
+    if show_enabled and show_disabled:
+        print("Cannot combine --enabled and --disabled", file=sys.stderr)
+        return 2
+    filters_applied: dict[str, bool] = {}
+    models = imported.get("models", [])
+    if show_active:
+        models = [m for m in models if m.get("location", "active") == "active"]
+        filters_applied["active"] = True
+    elif show_archived:
+        models = [m for m in models if m.get("location") == "archived"]
+        filters_applied["archived"] = True
+    aliases_data = imported.get("aliases", [])
+    if show_enabled:
+        aliases_data = [a for a in aliases_data if a.get("enabled")]
+        filters_applied["enabled"] = True
+    elif show_disabled:
+        aliases_data = [a for a in aliases_data if not a.get("enabled")]
+        filters_applied["disabled"] = True
+    if getattr(args, "json", False):
+        model_list = []
+        for idx, model in enumerate(models, start=1):
+            model_list.append({
+                "id": idx,
+                "path": model.get("path"),
+                "state": model.get("state"),
+                "location": model.get("location", "active"),
+                "size_bytes": model.get("size_bytes"),
+                "aliases": list(model.get("aliases", [])),
+            })
+        alias_list = []
+        for idx, alias in enumerate(aliases_data, start=1):
+            alias_list.append({
+                "id": f"a{idx}",
+                "section": alias.get("section"),
+                "enabled": bool(alias.get("enabled")),
+                "model_path": alias.get("model_path"),
+            })
+        data: dict[str, Any] = {"models": model_list, "aliases": alias_list}
+        if filters_applied:
+            data["filters_applied"] = filters_applied
+        _print_json(_json_envelope("list", data))
+        return 0
+    filtered_imported = dict(imported, models=models, aliases=aliases_data)
+    _print_list(filtered_imported)
     return 0
 
 
@@ -628,10 +761,58 @@ def cmd_show(args: argparse.Namespace, config: configparser.ConfigParser) -> int
         aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
         key = _hf_key_for_alias(aliases[0]) if aliases else None
         hf_state = _load_json(_state_dir() / 'hf-status.json') or {}
-        _print_model_details(imported, model_path, gpu_vram_bytes=_gpu_vram_bytes(args), benchmark=_load_json(_benchmark_file(config, model_path)), hf_status=hf_state.get(key) if key else None)
+        benchmark = _load_json(_benchmark_file(config, model_path))
+        gpu_vram_bytes = _gpu_vram_bytes(args)
+        if getattr(args, "json", False):
+            model = next((m for m in imported.get("models", []) if m["path"] == model_path), None)
+            guidance = _estimate_model_guidance(
+                model,
+                gpu_vram_bytes=gpu_vram_bytes,
+                benchmark=benchmark,
+                hf_status=hf_state.get(key) if key else None,
+            )
+            aliases_data = [
+                {
+                    "section": a["section"],
+                    "state": "enabled" if a.get("enabled") else "disabled",
+                    "enabled": bool(a.get("enabled")),
+                }
+                for a in aliases
+            ]
+            model_data = {}
+            if model:
+                model_data.update(
+                    path=model_path,
+                    state=model["state"],
+                    location=model.get("location", "active"),
+                    size_bytes=model.get("size_bytes"),
+                )
+            model_data["aliases"] = aliases_data
+            model_data["guidance"] = guidance
+            _print_json(_json_envelope("show", {
+                "target": args.target,
+                "resolved_target": model_path,
+                "model": model_data,
+            }))
+            return 0
+        _print_model_details(imported, model_path, gpu_vram_bytes=gpu_vram_bytes, benchmark=benchmark, hf_status=hf_state.get(key) if key else None)
         return 0
     alias = _resolve_alias_target(imported, args.target)
     if alias:
+        if getattr(args, "json", False):
+            state = "enabled" if alias.get("enabled") else "disabled"
+            _print_json(_json_envelope("show", {
+                "target": args.target,
+                "resolved_target": alias["section"],
+                "alias": {
+                    "section": alias["section"],
+                    "state": state,
+                    "enabled": bool(alias.get("enabled")),
+                    "model_path": alias["model_path"],
+                    "params": alias.get("params", {}),
+                },
+            }))
+            return 0
         state = "enabled" if alias.get("enabled") else "disabled"
         print("Alias")
         print(f"  section: {alias['section']}")
@@ -641,6 +822,9 @@ def cmd_show(args: argparse.Namespace, config: configparser.ConfigParser) -> int
         for key, value in sorted(alias.get("params", {}).items()):
             print(f"    {key}: {value}")
         return 0
+    if getattr(args, "json", False):
+        _print_json(_json_envelope("show", status="error", error={"code": "target_not_found", "message": f"Could not resolve target: {args.target}"}))
+        return 2
     print(f"Could not resolve target: {args.target}", file=sys.stderr)
     print("Try: modelctl list", file=sys.stderr)
     return 2
@@ -650,10 +834,29 @@ def cmd_aliases(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     imported = _import_from_config(config)
     model_path = _resolve_model_target(imported, args.target)
     if model_path is None:
+        if getattr(args, "json", False):
+            _print_json(_json_envelope("aliases", status="error", error={"code": "target_not_found", "message": f"Could not resolve model target: {args.target}"}))
+            return 2
         print(f"Could not resolve model target: {args.target}", file=sys.stderr)
         print("Try: modelctl list", file=sys.stderr)
         return 2
     aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
+    if getattr(args, "json", False):
+        aliases_data = [
+            {
+                "section": a["section"],
+                "state": "enabled" if a.get("enabled") else "disabled",
+                "enabled": bool(a.get("enabled")),
+            }
+            for a in aliases
+        ]
+        _print_json(_json_envelope("aliases", {
+            "target": args.target,
+            "resolved_target": model_path,
+            "model_path": model_path,
+            "aliases": aliases_data,
+        }))
+        return 0
     print(f"Aliases for {model_path}")
     for alias in aliases:
         state = "enabled" if alias.get("enabled") else "disabled"
@@ -665,16 +868,27 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
     router_ini = Path(config.get("router", "ini")).expanduser()
     registry = Path(config.get("state", "registry", fallback=str(Path(args.config).with_name("modelctl.yaml")))).expanduser()
     exit_code = 0
+    checks: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    def check(name: str, status: str, *, path: Path | str | None = None, detail: str | None = None) -> None:
+        item: dict[str, Any] = {"name": name, "status": status}
+        if path is not None:
+            item["path"] = str(path)
+        if detail is not None:
+            item["detail"] = detail
+        checks.append(item)
+
     if router_ini.exists() and router_ini.is_file():
-        print(f"OK router ini readable: {router_ini}")
+        check("router_ini", "ok", path=router_ini)
         imported = _import_from_config(config)
-        print(f"OK aliases detected: {len(imported['aliases'])}")
-        print(f"OK models detected: {len(imported['models'])}")
+        check("aliases", "ok", detail=str(len(imported["aliases"])))
+        check("models", "ok", detail=str(len(imported["models"])))
         archived_count = sum(1 for model in imported.get("models", []) if model.get("location") == "archived")
         if archived_count:
-            print(f"OK archived models detected: {archived_count}")
+            check("archived_models", "ok", detail=str(archived_count))
     else:
-        print(f"ERROR router ini missing: {router_ini}")
+        check("router_ini", "error", path=router_ini, detail="missing")
         imported = {"aliases": [], "models": []}
         exit_code = 1
 
@@ -683,20 +897,50 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         probe = registry.parent / ".modelctl-write-test"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
-        print(f"OK registry writable: {registry}")
+        check("registry_writable", "ok", path=registry)
     except OSError as exc:
-        print(f"ERROR registry not writable: {registry} ({exc})")
+        check("registry_writable", "error", path=registry, detail=str(exc))
         exit_code = 1
 
     download_dir = config.get("models", "download_dir", fallback=None) or imported.get("download_dir")
     if download_dir:
         p = Path(download_dir).expanduser()
         if p.exists() and p.is_dir():
-            print(f"OK download dir exists: {p}")
+            check("download_dir", "ok", path=p)
         else:
-            print(f"WARN download dir missing: {p}")
+            check("download_dir", "warning", path=p, detail="missing")
+            warnings.append("download_dir_missing")
     else:
-        print("WARN download dir unknown")
+        check("download_dir", "warning", detail="unknown")
+        warnings.append("download_dir_unknown")
+    paths = {
+        "config_dir": str(_config_dir()),
+        "data_dir": str(_data_dir()),
+        "state_dir": str(_state_dir()),
+        "cache_dir": str(_cache_dir()),
+        "recovery_dir": str(_recovery_dir(config)),
+        "benchmark_dir": str(_benchmark_dir(config)),
+    }
+    safety = {
+        "delete_requires_tty_confirmation": True,
+        "archive_apply_supports_dry_run": True,
+    }
+    if getattr(args, "json", False):
+        _print_json(_json_envelope(
+            "doctor",
+            {"checks": checks, "paths": paths, "safety": safety},
+            status="ok" if exit_code == 0 else "error",
+            warnings=warnings,
+            error={"code": "doctor_failed", "message": "one or more checks failed"} if exit_code else None,
+        ))
+        return exit_code
+    for item in checks:
+        status = item["status"].upper()
+        path = f": {item['path']}" if "path" in item else ""
+        detail = f" ({item['detail']})" if "detail" in item else ""
+        print(f"{status} {item['name']}{path}{detail}")
+    for name, value in paths.items():
+        print(f"OK {name.replace('_', ' ')}: {value}")
     print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/apply commands accept --dry-run previews when you want smoke-test behavior.")
     return exit_code
 
@@ -734,31 +978,63 @@ def cmd_delete(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         alias = _resolve_alias_target(imported, args.target)
         model_path = alias.get("model_path") if alias else None
     if model_path is None:
+        if getattr(args, "json", False) and not getattr(args, "apply", False):
+            _print_json(_json_envelope("delete", {}, status="error",
+                error={"code": "target_not_found", "message": f"Could not resolve model target: {args.target}"}))
+            return 2
         print(f"Could not resolve model target: {args.target}", file=sys.stderr)
         print("Try: modelctl list", file=sys.stderr)
         return 2
     plan = plan_delete_model(imported, model_path)
     if args.dry_run:
+        if getattr(args, "json", False):
+            alias_sections = [{"section": a["section"], "enabled": a.get("enabled")} for a in plan.get("aliases", [])]
+            planned_recovery = str(_default_recovery_path(args.config, config))
+            data: dict[str, Any] = {
+                "target": args.target,
+                "dry_run": True,
+                "model_path": model_path,
+                "affected_aliases": plan.get("aliases_impacted", []),
+                "affected_sections": plan.get("aliases_impacted", []),
+                "planned_recovery_manifest_path": planned_recovery,
+                "planned_changes": [f"delete {Path(model_path).name}"] + [f"remove alias [{s}]" for s in plan.get("aliases_impacted", [])],
+                "would_delete_file": False,
+                "would_update_ini": False,
+                "would_write_recovery_manifest": False,
+                "delete_requires_apply": True,
+            }
+            _print_json(_json_envelope("delete", data, warnings=plan.get("warnings")))
+            return 0
         _print_delete_plan(plan, dry_run=True)
         print("No files or ini entries were changed.")
         return 0
     _print_delete_plan(plan, dry_run=False)
-    if not _confirm_delete_interactively(plan):
+    if not getattr(args, "apply", False) and not _confirm_delete_interactively(plan):
         print("Delete cancelled. No files or ini entries were changed.")
         return 1
+    manifest_path = _default_recovery_path(args.config, config)
     try:
-        result = apply_delete_plan(plan)
+        result = apply_delete_plan(plan, manifest_path=manifest_path)
     except Exception as exc:
-        print(f"delete failed safely: {exc}", file=sys.stderr)
+        if getattr(args, "json", False):
+            _print_json(_json_envelope("delete", {}, status="error",
+                error={"code": "delete_failed", "message": str(exc)}))
+        else:
+            print(f"delete failed safely: {exc}", file=sys.stderr)
         return 1
     print(f"APPLIED: deleted {len(result['deleted_files'])} file(s) and removed {len(plan['aliases_impacted'])} alias section(s)")
-    print(f"  router ini backup: {result['router_ini_backup']}")
+    print(f"  recovery manifest: {result['recovery_manifest']}")
     return 0
 
 
 def _default_plan_path(config_path: str, prefix: str = "archive") -> Path:
     stamp = _utc_now().replace(":", "").replace("-", "")
-    return Path(config_path).expanduser().with_name("plans") / f"{prefix}-{stamp}.json"
+    return _state_dir() / "plans" / f"{prefix}-{stamp}.json"
+
+
+def _default_recovery_path(config_path: str, config: configparser.ConfigParser | None = None, prefix: str = "delete") -> Path:
+    stamp = _utc_now().replace(":", "").replace("-", "")
+    return _recovery_dir(config) / f"{prefix}-{stamp}.json"
 
 
 def _print_archive_plan(plan: dict[str, Any], dry_run: bool) -> None:
@@ -809,9 +1085,42 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     imported = _import_from_config(config)
     targets = _archive_targets(args, imported)
     if targets is None:
+        if getattr(args, 'json', False):
+            _print_json(_json_envelope("archive", {}, status="error",
+                error={"code": "target_not_found", "message": "Could not resolve archive target(s)"}))
         return 2
-    plan = plan_archive_models(imported, targets)
+    plan = plan_archive_models(imported, targets, disable_aliases=bool(getattr(args, "disable_aliases", False)))
     if getattr(args, 'dry_run', False):
+        if getattr(args, 'json', False):
+            data = {
+                "targets": targets,
+                "dry_run": True,
+                "would_move_file": False,
+                "would_update_ini": False,
+                "aliases_preserved": plan["aliases_policy"] == "preserve",
+                "disable_aliases": bool(getattr(args, "disable_aliases", False)),
+                "affected_aliases": [],
+                "entries": [],
+                "planned_changes": [],
+                "metadata_path": None,
+            }
+            for entry in plan["entries"]:
+                action = "preserve" if plan["aliases_policy"] == "preserve" else "disable"
+                data["entries"].append({
+                    "source_path": entry["source"],
+                    "archive_path": entry["destination"],
+                    "aliases_impacted": entry["aliases_impacted"],
+                })
+                data["affected_aliases"].extend(entry["aliases_impacted"])
+                data["planned_changes"].append(
+                    f"move {Path(entry['source']).name} to archive"
+                )
+                if entry["aliases_impacted"]:
+                    data["planned_changes"].append(
+                        f"{action} {len(entry['aliases_impacted'])} alias(es)"
+                    )
+            _print_json(_json_envelope("archive", data, warnings=plan.get("warnings")))
+            return 0
         _print_archive_plan(plan, dry_run=True)
         print("No files or ini entries were changed. Re-run without --dry-run to apply this exact archive plan.")
         return 0
@@ -819,8 +1128,36 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     try:
         applied = apply_archive_plan(plan, plan_path=plan_path)
     except Exception as exc:
-        print(f"archive failed safely: {exc}", file=sys.stderr)
+        if getattr(args, 'json', False):
+            _print_json(_json_envelope("archive", {}, status="error",
+                error={"code": "archive_failed", "message": str(exc)}))
+        else:
+            print(f"archive failed safely: {exc}", file=sys.stderr)
         return 1
+    if getattr(args, 'json', False):
+        entries_data = []
+        affected = []
+        for entry in applied.get("entries", []):
+            entries_data.append({
+                "source_path": entry.get("source"),
+                "archive_path": entry.get("destination"),
+                "aliases_impacted": entry.get("aliases_impacted", []),
+            })
+            affected.extend(entry.get("aliases_impacted", []))
+        _print_json(_json_envelope("archive", {
+            "targets": targets,
+            "applied": True,
+            "dry_run": False,
+            "moved": applied.get("moved", []),
+            "entries": entries_data,
+            "affected_aliases": affected,
+            "aliases_preserved": applied.get("aliases_policy") == "preserve",
+            "disable_aliases": bool(getattr(args, "disable_aliases", False)),
+            "ini_path": config.get("router", "ini"),
+            "metadata_path": str(plan_path),
+            "router_ini_backup": applied.get("router_ini_backup"),
+        }, warnings=applied.get("warnings")))
+        return 0
     _print_archive_plan(applied, dry_run=False)
     print("Archive applied. Router ini backup and recovery metadata were written.")
     return 0
@@ -879,6 +1216,10 @@ def _append_disabled_entries(router_ini: Path, entries: list[dict[str, str]]) ->
 
 
 def cmd_update_check(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    if not args.target:
+        print("usage: modelctl update-check TARGET", file=sys.stderr)
+        print("Try: modelctl list", file=sys.stderr)
+        return 2
     imported = _import_from_config(config)
     alias = _resolve_alias_target(imported, args.target)
     if not alias:
@@ -964,14 +1305,36 @@ def cmd_enable_disable(args: argparse.Namespace, config: configparser.ConfigPars
 
 
 def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
-    print("Router ini entry plan with estimated best defaults")
-    print(f"  alias: {args.alias}")
-    print(f"  model: {args.model}")
-    print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
+    router_ini = Path(config.get("router", "ini")).expanduser()
     if getattr(args, 'dry_run', False):
+        if getattr(args, 'json', False):
+            planned_changes = [
+                f"append section [{args.alias}] to router ini",
+                f"set model = {args.model}",
+                "set ctx-size = 65536",
+                "set n-gpu-layers = 999",
+                "set flash-attn = on",
+            ]
+            _print_json(_json_envelope("add", {
+                "target_path": str(router_ini),
+                "alias": args.alias,
+                "model_path": args.model,
+                "dry_run": True,
+                "would_write_ini": False,
+                "planned_changes": planned_changes,
+            }))
+            return 0
+        print("Router ini entry plan with estimated best defaults")
+        print(f"  alias: {args.alias}")
+        print(f"  model: {args.model}")
+        print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
         print("No ini entries were changed.")
         return 0
-    router_ini = Path(config.get("router", "ini")).expanduser()
+    if not getattr(args, 'json', False):
+        print("Router ini entry plan with estimated best defaults")
+        print(f"  alias: {args.alias}")
+        print(f"  model: {args.model}")
+        print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
     existing = router_ini.read_text(encoding="utf-8") if router_ini.exists() else ""
     block = "\n".join([
         f"[{args.alias}]",
@@ -982,6 +1345,15 @@ def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -
         "",
     ])
     router_ini.write_text((existing.rstrip() + "\n\n" if existing.strip() else "") + block, encoding="utf-8")
+    if getattr(args, 'json', False):
+        _print_json(_json_envelope("add", {
+            "applied": True,
+            "dry_run": False,
+            "alias": args.alias,
+            "model_path": args.model,
+            "ini_path": str(router_ini),
+        }))
+        return 0
     print(f"APPLIED: appended [{args.alias}] to {router_ini}")
     return 0
 
@@ -1050,6 +1422,392 @@ def cmd_scan(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     return 0
 
 
+def _archive_metadata_dirs(config_path: str) -> list[Path]:
+    config_file = Path(config_path).expanduser()
+    dirs = [config_file.with_name("plans")]
+    state_plans = _state_dir() / "plans"
+    state_archive = _state_dir() / "archive"
+    for directory in (state_plans, state_archive):
+        if directory not in dirs:
+            dirs.append(directory)
+    return dirs
+
+
+def _find_archive_metadata(config_path: str, archived_path: str) -> dict[str, Any] | None:
+    for directory in _archive_metadata_dirs(config_path):
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.json"), reverse=True):
+            payload = _load_json(path)
+            if not isinstance(payload, dict) or payload.get("action") != "archive_models":
+                continue
+            for entry in payload.get("entries", []):
+                if entry.get("destination") == archived_path:
+                    return payload
+    return None
+
+
+def _active_restore_path(config: configparser.ConfigParser, archived_path: str, metadata: dict[str, Any] | None) -> str:
+    if metadata:
+        for entry in metadata.get("entries", []):
+            if entry.get("destination") == archived_path and entry.get("source"):
+                return str(Path(entry["source"]).expanduser())
+    download_dir = config.get("models", "download_dir", fallback=None)
+    if not download_dir:
+        return str(Path(archived_path).expanduser().name)
+    return str(Path(download_dir).expanduser() / Path(archived_path).name)
+
+
+def _restore_plan(config: configparser.ConfigParser, config_path: str, target: str) -> dict[str, Any]:
+    imported = _import_from_config(config)
+    archived_path = _resolve_model_target(imported, target)
+    if archived_path is None:
+        archived_path = target.split(":", 1)[1] if target.startswith("path:") else target
+    archived = Path(archived_path).expanduser()
+    metadata = _find_archive_metadata(config_path, str(archived))
+    active = Path(_active_restore_path(config, str(archived), metadata)).expanduser()
+    warnings: list[str] = []
+    if not archived.exists():
+        warnings.append(f"archive source missing: {archived}")
+    if active.exists():
+        warnings.append(f"target active file already exists: {active}")
+    reenable_aliases = False
+    if metadata:
+        reenable_aliases = metadata.get("aliases_policy") == "disable"
+    return {
+        "version": 1,
+        "action": "restore_models",
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "router_ini": config.get("router", "ini"),
+        "entries": [
+            {
+                "source": str(archived),
+                "destination": str(active),
+                "reenable_aliases": reenable_aliases,
+                "metadata_found": bool(metadata),
+            }
+        ],
+        "warnings": warnings,
+        "requires_confirmation": False,
+    }
+
+
+def _print_restore_plan(plan: dict[str, Any], dry_run: bool) -> None:
+    print("DRY RUN: restore model impact preview" if dry_run else "APPLIED: restore model")
+    print(f"  router ini: {plan['router_ini']}")
+    for idx, entry in enumerate(plan.get("entries", []), start=1):
+        print(f"  model {idx}:")
+        print(f"    archive source: {entry['source']}")
+        print(f"    active destination: {entry['destination']}")
+        print(f"    re-enable aliases: {entry.get('reenable_aliases', False)}")
+    for warning in plan.get("warnings", []):
+        print(f"  warning: {warning}")
+
+
+def cmd_restore(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    plan = _restore_plan(config, args.config, args.target)
+    if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            entry = plan["entries"][0]
+            data: dict[str, Any] = {
+                "target": args.target,
+                "dry_run": True,
+                "archive_path": entry["source"],
+                "source_path": entry["source"],
+                "active_path": entry["destination"],
+                "restore_path": entry["destination"],
+                "affected_aliases": [],
+                "planned_changes": [f"restore {Path(entry['source']).name} to active storage"],
+                "would_move_file": False,
+                "would_update_ini": False,
+            }
+            if entry.get("reenable_aliases"):
+                metadata = _find_archive_metadata(args.config, entry["source"])
+                if metadata:
+                    for me in metadata.get("entries", []):
+                        if me.get("destination") == entry["source"]:
+                            data["affected_aliases"] = me.get("aliases_impacted", [])
+                            break
+                if not data["affected_aliases"]:
+                    data["planned_changes"].append("re-enable aliases after restore")
+            _print_json(_json_envelope("restore", data, warnings=plan.get("warnings")))
+            return 0
+        _print_restore_plan(plan, dry_run=True)
+        print("No files or ini entries were changed. Re-run without --dry-run to restore.")
+        return 0
+    try:
+        applied = apply_restore_plan(plan)
+    except Exception as exc:
+        if getattr(args, 'json', False):
+            _print_json(_json_envelope("restore", {}, status="error",
+                error={"code": "restore_failed", "message": str(exc)}))
+        else:
+            print(f"restore failed safely: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, 'json', False):
+        restored_entries = []
+        affected_aliases = []
+        for entry in applied.get("entries", []):
+            restored_entries.append({
+                "source": entry.get("source"),
+                "destination": entry.get("destination"),
+            })
+            if entry.get("reenable_aliases"):
+                metadata = _find_archive_metadata(args.config, entry.get("source"))
+                if metadata:
+                    for me in metadata.get("entries", []):
+                        if me.get("destination") == entry.get("source"):
+                            affected_aliases = me.get("aliases_impacted", [])
+                            break
+        _print_json(_json_envelope("restore", {
+            "target": args.target,
+            "applied": True,
+            "dry_run": False,
+            "restored": restored_entries,
+            "affected_aliases": affected_aliases,
+            "ini_path": config.get("router", "ini"),
+            "router_ini_backup": applied.get("router_ini_backup"),
+        }, warnings=applied.get("warnings")))
+        return 0
+    _print_restore_plan(applied, dry_run=False)
+    print("Restore applied. Router ini backup was written and unrelated ini content was preserved.")
+    return 0
+
+def cmd_recover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    manifest_path = Path(args.manifest).expanduser()
+    manifest = _load_json(manifest_path)
+    if not isinstance(manifest, dict):
+        if getattr(args, 'json', False):
+            _print_json(_json_envelope("recover", {}, status="error",
+                error={"code": "manifest_not_found", "message": f"could not read recovery manifest: {manifest_path}"}))
+        else:
+            print(f"recover failed safely: could not read recovery manifest: {manifest_path}", file=sys.stderr)
+        return 1
+    if getattr(args, "dry_run", False):
+        if getattr(args, "json", False):
+            model_path = manifest.get("deleted_model_path", "")
+            affected_aliases = [a.get("section") for a in manifest.get("affected_aliases", []) if a.get("section")]
+            affected_sections = [s.get("section") for s in manifest.get("affected_sections", []) if s.get("section")]
+            router_ini_path = Path(config.get("router", "ini")).expanduser()
+            imported = _import_from_config(config)
+            existing_sections = {a.get("section") for a in imported.get("aliases", [])}
+            conflicts = [s for s in affected_sections if s in existing_sections]
+            data: dict[str, Any] = {
+                "recovery_manifest_path": str(manifest_path),
+                "dry_run": True,
+                "model_path": model_path,
+                "affected_aliases": affected_aliases,
+                "affected_sections": affected_sections,
+                "planned_changes": [f"restore {len(affected_sections)} section(s) to router ini"],
+                "would_update_ini": False,
+                "conflict_status": {"has_conflicts": bool(conflicts), "conflicting_sections": conflicts},
+            }
+            _print_json(_json_envelope("recover", data, warnings=[]))
+            return 0
+        print("DRY RUN: recover delete manifest")
+        print(f"  manifest: {manifest_path}")
+        print(f"  model: {manifest.get('deleted_model_path')}")
+        print(f"  sections to restore: {len(manifest.get('affected_sections', []))}")
+        return 0
+    affected_aliases = [a.get("section") for a in manifest.get("affected_aliases", []) if a.get("section")]
+    affected_sections = [s.get("section") for s in manifest.get("affected_sections", []) if s.get("section")]
+    router_ini_path = Path(config.get("router", "ini")).expanduser()
+    imported_before = _import_from_config(config)
+    section_conflicts = [s for s in affected_sections if s in {a.get("section") for a in imported_before.get("aliases", [])}]
+    try:
+        result = apply_recover_manifest(manifest, router_ini=config.get("router", "ini"))
+    except Exception as exc:
+        if getattr(args, 'json', False):
+            conf = {"has_conflicts": bool(section_conflicts), "conflicting_sections": section_conflicts}
+            _print_json(_json_envelope("recover", {
+                "recovery_manifest_path": str(manifest_path),
+                "conflict_status": conf,
+            }, status="error",
+                error={"code": "recover_failed", "message": str(exc)}))
+        else:
+            print(f"recover failed safely: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, 'json', False):
+        _print_json(_json_envelope("recover", {
+            "recovery_manifest_path": str(manifest_path),
+            "applied": True,
+            "dry_run": False,
+            "model_path": manifest.get("deleted_model_path", ""),
+            "sections_restored": result.get("sections", []),
+            "affected_aliases": affected_aliases,
+            "ini_path": str(router_ini_path),
+            "conflict_status": {"has_conflicts": bool(section_conflicts), "conflicting_sections": section_conflicts},
+        }))
+        return 0
+    print("APPLIED: recovered delete manifest")
+    print(f"  router ini: {result['router_ini']}")
+    print(f"  sections restored: {len(result['sections'])}")
+    for section in result["sections"]:
+        print(f"    - {section}")
+    return 0
+
+
+def _monitor_discovery_endpoints(config: configparser.ConfigParser) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    configured_values: list[str] = []
+    for option in ("endpoint", "base_url", "url"):
+        value = config.get("monitor", option, fallback="").strip()
+        if value:
+            configured_values.append(value)
+    endpoints_value = config.get("monitor", "endpoints", fallback="").strip()
+    if endpoints_value:
+        configured_values.extend(x.strip() for x in re.split(r"[,\n]", endpoints_value) if x.strip())
+    for endpoint in configured_values:
+        candidates.append({"endpoint": endpoint.rstrip("/"), "source": "configured"})
+    include_defaults = config.getboolean("monitor", "discover_defaults", fallback=True)
+    if include_defaults:
+        candidates.extend([
+            {"endpoint": "http://127.0.0.1:8080/v1", "source": "default_loopback"},
+            {"endpoint": "http://localhost:8080/v1", "source": "default_localhost"},
+        ])
+    seen: set[str] = set()
+    unique: list[dict[str, str]] = []
+    for candidate in candidates:
+        endpoint = candidate["endpoint"].rstrip("/")
+        if endpoint in seen:
+            continue
+        seen.add(endpoint)
+        unique.append({"endpoint": endpoint, "source": candidate["source"]})
+    return unique
+
+
+def _models_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.rstrip("/")
+    return f"{endpoint}/models" if endpoint.endswith("/v1") else f"{endpoint}/v1/models"
+
+
+def _query_models_endpoint(endpoint: str, timeout: float) -> dict[str, Any]:
+    models_endpoint = _models_endpoint(endpoint)
+    result: dict[str, Any] = {"endpoint": endpoint.rstrip("/"), "reachable": False, "models_endpoint": models_endpoint, "model_ids": [], "error_message": None}
+    try:
+        request = urllib.request.Request(models_endpoint, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(1024 * 1024)
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        model_ids: list[str] = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("id") is not None:
+                    model_ids.append(str(item["id"]))
+                elif isinstance(item, str):
+                    model_ids.append(item)
+        result["reachable"] = True
+        result["model_ids"] = model_ids
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        result["error_message"] = str(exc)
+    return result
+
+
+def cmd_monitor_discover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    timeout = config.getfloat("monitor", "discovery_timeout", fallback=0.5)
+    candidates = []
+    for candidate in _monitor_discovery_endpoints(config):
+        probed = _query_models_endpoint(candidate["endpoint"], timeout)
+        probed["source"] = candidate["source"]
+        candidates.append(probed)
+    reachable = [candidate for candidate in candidates if candidate["reachable"]]
+    selected = reachable[0]["endpoint"] if len(reachable) == 1 else None
+    warnings: list[str] = []
+    if len(reachable) > 1:
+        warnings.append("multiple servers found; explicit selection/configuration is required")
+    elif not reachable:
+        warnings.append("no server found; provide endpoint or log details")
+    data = {"candidates": candidates, "found_count": len(reachable), "selected": selected, "mutated": False}
+    if getattr(args, "json", False):
+        _print_json(_json_envelope("monitor discover", data, warnings=warnings))
+        return 0
+    print("Monitor discovery (read-only)")
+    print("  no mutation performed")
+    print(f"  found count: {len(reachable)}")
+    if selected:
+        print(f"  selected/recommended: {selected}")
+    elif len(reachable) > 1:
+        print("  multiple servers found; explicit selection/configuration is required")
+    else:
+        print("  no server found; provide endpoint or log details")
+    for candidate in candidates:
+        print(f"  - endpoint: {candidate['endpoint']}")
+        print(f"    source: {candidate['source']}")
+        print(f"    reachable: {str(candidate['reachable']).lower()}")
+        print(f"    models endpoint: {candidate['models_endpoint']}")
+        if candidate["model_ids"]:
+            print(f"    model ids: {', '.join(candidate['model_ids'])}")
+        if candidate.get("error_message"):
+            print(f"    error: {candidate['error_message']}")
+    return 0
+
+
+def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    target = getattr(args, "target", "router")
+    if target == "discover":
+        return cmd_monitor_discover(args, config)
+    backend = config.get("monitor", "backend", fallback="none").strip().lower() or "none"
+    lines_requested = max(int(getattr(args, "lines", 80) or 80), 0)
+    follow = bool(getattr(args, "follow", False))
+    as_json = bool(getattr(args, "json", False))
+    payload: dict[str, Any] = {"target": target, "backend": backend, "follow": follow, "lines_requested": lines_requested, "mode": "read-only"}
+    def finish(code: int) -> int:
+        if as_json:
+            error = None
+            if code != 0:
+                error = {"code": "monitor_failed", "message": str(payload.get("error") or "monitor failed")}
+            _print_json(_json_envelope("monitor", payload, status="ok" if code == 0 else "error", error=error))
+        else:
+            if code == 0:
+                print("Router monitor")
+                print("  mode: read-only")
+                print(f"  target: {payload.get('target')}")
+                print(f"  backend: {payload.get('backend')}")
+                if payload.get("log_file"):
+                    print(f"  log file: {payload['log_file']}")
+                for line in payload.get("lines", []):
+                    print(line)
+            else:
+                print(str(payload.get("error") or "monitor failed"), file=sys.stderr)
+        return code
+    if target != "router":
+        payload["error"] = f"unsupported monitor target: {target}"
+        return finish(2)
+    if backend == "none":
+        payload["status"] = "unconfigured"
+        payload["error"] = "monitor backend is not configured; set [monitor] backend=file/systemd/container/command"
+        return finish(2)
+    if backend == "file":
+        log_file = config.get("monitor", "log_file", fallback="").strip()
+        payload["log_file"] = log_file
+        if not log_file:
+            payload["status"] = "unconfigured"
+            payload["error"] = "monitor backend=file requires [monitor] log_file"
+            return finish(2)
+        path = Path(log_file).expanduser()
+        if not path.exists():
+            payload["status"] = "missing"
+            payload["error"] = f"configured log file does not exist: {path}"
+            return finish(1)
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            payload["status"] = "error"
+            payload["error"] = f"failed to read configured log file: {exc}"
+            return finish(1)
+        payload["status"] = "ok"
+        payload["lines"] = lines[-lines_requested:] if lines_requested else []
+        return finish(0)
+    if backend in {"systemd", "container", "docker", "command", "modelctl"}:
+        payload["status"] = "not_implemented"
+        payload["error"] = f"monitor backend '{backend}' is recognized but not implemented yet"
+        return finish(2)
+    payload["status"] = "unsupported"
+    payload["error"] = f"unsupported monitor backend: {backend}"
+    return finish(2)
+
+
 def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     print("Outcome rules for model/settings recommendations")
     print("  speed: 20+ t/s target")
@@ -1088,20 +1846,26 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=IMPORT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub.add_parser(
+    doctor = sub.add_parser(
         "doctor",
         help="Check configured paths and current capabilities",
         description="Check configured paths, writable state, and safety capabilities.",
         epilog=DOCTOR_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub.add_parser(
+    doctor.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    list_cmd = sub.add_parser(
         "list",
         help="List detected models and aliases from configured router ini",
         description="List detected Models and Aliases from the configured router ini.",
         epilog=LIST_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    list_cmd.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    list_cmd.add_argument("--active", action="store_true", help="Show only active models")
+    list_cmd.add_argument("--archived", action="store_true", help="Show only archived models")
+    list_cmd.add_argument("--enabled", action="store_true", help="Show only enabled aliases")
+    list_cmd.add_argument("--disabled", action="store_true", help="Show only disabled aliases")
     show = sub.add_parser(
         "show",
         help="Show details for a model or alias target",
@@ -1111,6 +1875,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("target", metavar="TARGET", help="Model or alias target; see formats below")
     show.add_argument("--gpu-vram-gib", type=float, help="Optional GPU VRAM size in GiB to estimate context and layer fit")
+    show.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     aliases = sub.add_parser(
         "aliases",
         help="List aliases for a model target",
@@ -1119,6 +1884,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     aliases.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, path:/models/model.gguf, or filename.gguf")
+    aliases.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     delete = sub.add_parser(
         "delete",
         help="Interactively delete a model file and remove aliases; --dry-run to preview",
@@ -1128,17 +1894,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     delete.add_argument("target", metavar="TARGET", help="Model target; e.g. 1, alias:my-model, path:/models/model.gguf, or filename.gguf")
     delete.add_argument("--dry-run", action="store_true", help="Preview file and alias removals without changing anything")
+    delete.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    delete.add_argument("--apply", action="store_true", help="Explicitly apply destructive delete in non-interactive automation; writes recovery manifest first")
     archive = sub.add_parser(
         "archive",
-        help="Archive model files and disable aliases",
-        description="Move model files to the archive tree and disable affected aliases.",
+        help="Archive model files while preserving aliases by default",
+        description="Move model files to the archive tree; aliases are preserved unless --disable-aliases is used.",
         epilog=ARCHIVE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     archive.add_argument("target", nargs="*", metavar="TARGET", help="One or more model targets; e.g. 1 alias:my-model path:/models/model.gguf")
     archive.add_argument("--group", metavar="NAME", help="Archive a named group; currently supports: lab")
     archive.add_argument("--dry-run", action="store_true", help="Preview the archive plan without changing anything")
+    archive.add_argument("--disable-aliases", action="store_true", help="Disable only aliases that directly point at archived models; default preserves aliases")
     archive.add_argument("--plan", metavar="PLAN.json", help="Optional path to write recovery metadata JSON")
+    archive.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     update_check = sub.add_parser(
         "update-check",
         help="Check Hugging Face metadata for model updates",
@@ -1153,15 +1923,35 @@ def build_parser() -> argparse.ArgumentParser:
     disable = sub.add_parser("disable", help="Disable an alias in the router ini", description="Disable an alias in the router ini.", epilog=DISABLE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     disable.add_argument("target", metavar="ALIAS", help="Alias target, e.g. a2 or alias:my-model")
     disable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
-    add_entry = sub.add_parser("add-entry", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add = sub.add_parser("add", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add.add_argument("--alias", required=True, help="Router alias/section name to create")
+    add.add_argument("--model", required=True, help="GGUF model path for the new entry")
+    add.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+    add.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    add_entry = sub.add_parser("add-entry", help="Deprecated alias for add", description="Deprecated compatibility alias for `modelctl add`.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
     add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
     add_entry.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
+    add_entry.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+
     benchmark = sub.add_parser("benchmark", help="Benchmark a model with llama.cpp and suggest settings", description="Benchmark a current model with llama.cpp and suggest the most appropriate settings.", epilog=BENCHMARK_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     benchmark.add_argument("target", metavar="TARGET", help="Model target, e.g. 1 or alias:my-model")
     benchmark.add_argument("--prompt-set", default="smoke", help="Prompt set to run; default: smoke")
     scan = sub.add_parser("scan", help="Scan for manually added GGUFs not yet in the ini", description="Scan the models folder for GGUF files not yet referenced by the router ini.", epilog=SCAN_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     scan.add_argument("--dry-run", action="store_true", help="Preview discovered entries without appending anything")
+    restore = sub.add_parser("restore", help="Restore archived model files to active storage", description="Move archived model files back to active storage.", epilog=RESTORE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    restore.add_argument("target", metavar="TARGET", help="Archived model target; e.g. 1, path:/archive/model.gguf, or filename.gguf")
+    restore.add_argument("--dry-run", action="store_true", help="Preview restore without changing files or ini entries")
+    restore.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    recover = sub.add_parser("recover", help="Recover aliases from a delete recovery manifest", description="Recover affected aliases/sections from focused delete recovery metadata.", epilog=RECOVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    recover.add_argument("manifest", metavar="MANIFEST.json", help="Delete recovery manifest JSON")
+    recover.add_argument("--dry-run", action="store_true", help="Preview recovery without changing ini entries")
+    recover.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
+    monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs and discover endpoints without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    monitor.add_argument("target", nargs="?", default="router", choices=["router", "discover"], help="Monitor target; currently: router or discover")
+    monitor.add_argument("--follow", action="store_true", help="Follow logs when the configured backend supports it")
+    monitor.add_argument("--lines", type=int, default=80, help="Number of recent log lines to show when supported")
+    monitor.add_argument("--json", action="store_true", help="Emit JSON monitor metadata and log lines")
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     return parser
 
@@ -1193,12 +1983,18 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_enable_disable(args, config, True)
     if args.command == "disable":
         return cmd_enable_disable(args, config, False)
-    if args.command == "add-entry":
+    if args.command in {"add", "add-entry"}:
         return cmd_add_entry(args, config)
     if args.command == "benchmark":
         return cmd_benchmark(args, config)
     if args.command == "scan":
         return cmd_scan(args, config)
+    if args.command == "restore":
+        return cmd_restore(args, config)
+    if args.command == "recover":
+        return cmd_recover(args, config)
+    if args.command == "monitor":
+        return cmd_monitor(args, config)
     if args.command == "rules":
         return cmd_rules(args, config)
     parser.error(f"Unhandled command: {args.command}")

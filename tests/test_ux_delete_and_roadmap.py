@@ -2,6 +2,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from modelctl_core import apply_delete_plan, detect_from_ini, plan_delete_model
@@ -98,13 +99,14 @@ ctx-size = 4096
             self.assertTrue(doomed.exists())
             self.assertEqual(router_ini.read_text(encoding="utf-8"), original)
 
-    def test_delete_core_removes_file_and_alias_section_with_backup(self):
+    def test_delete_core_removes_file_and_alias_section_with_focused_recovery_manifest(self):
         with tempfile.TemporaryDirectory() as td:
-            _root, _models, router_ini, _original, _config, doomed, keeper = self.make_fixture(td)
+            root, _models, router_ini, _original, _config, doomed, keeper = self.make_fixture(td)
             imported = detect_from_ini(router_ini)
             plan = plan_delete_model(imported, str(doomed))
+            manifest_path = root / "recovery" / "delete.json"
 
-            result = apply_delete_plan(plan)
+            result = apply_delete_plan(plan, manifest_path=manifest_path)
 
             self.assertEqual(result["deleted_files"], [str(doomed)])
             self.assertFalse(doomed.exists())
@@ -114,18 +116,23 @@ ctx-size = 4096
             self.assertNotIn(str(doomed), updated)
             self.assertIn("[keep-me]", updated)
             self.assertIn(str(keeper), updated)
-            self.assertTrue(Path(result["router_ini_backup"]).exists())
-            self.assertIn("original_ini_sha256", result)
+            self.assertTrue(manifest_path.exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["deleted_model_path"], str(doomed))
+            self.assertEqual([a["section"] for a in manifest["affected_aliases"]], ["delete-me"])
+            self.assertNotIn("router_ini_backup", result)
+            self.assertNotIn("original_ini_text", manifest)
 
-    def test_docs_name_hf_update_benchmark_and_settings_features_as_roadmap(self):
+    def test_docs_name_lifecycle_monitoring_and_benchmark_features_as_roadmap(self):
         docs = (ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
         for snippet in (
-            "Hugging Face download",
-            "up-to-date check",
-            "benchmark",
-            "suggest settings",
-            "hardware/config detection",
-            "not implemented in v0.1",
+            "archive",
+            "restore",
+            "delete",
+            "recover",
+            "monitor",
+            "Benchmark model files and runtime settings independently from aliases",
+            "Recommend good alias configurations for the current hardware and usage",
         ):
             self.assertIn(snippet, docs)
 

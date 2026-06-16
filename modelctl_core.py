@@ -251,6 +251,16 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Write text via temp file + fsync + replace to avoid partial ini/plan writes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,7 +333,7 @@ def lab_model_paths(imported: dict[str, Any]) -> list[str]:
     return paths
 
 
-def plan_archive_models(imported: dict[str, Any], model_paths: list[str]) -> dict[str, Any]:
+def plan_archive_models(imported: dict[str, Any], model_paths: list[str], *, disable_aliases: bool = False) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     warnings: list[str] = []
     seen: set[str] = set()
@@ -356,8 +366,8 @@ def plan_archive_models(imported: dict[str, Any], model_paths: list[str]) -> dic
         "action": "archive_models",
         "created_at": _utc_now(),
         "router_ini": imported["router_ini"],
-        "aliases_policy": "disable",
-        "requires_confirmation": True,
+        "aliases_policy": "disable" if disable_aliases else "preserve",
+        "requires_confirmation": False,
         "entries": entries,
         "warnings": warnings,
     }
@@ -380,12 +390,13 @@ def _updated_ini_for_archive(original_text: str, plan: dict[str, Any]) -> str:
     replacements: dict[int, str] = {}
     comment_ranges: list[tuple[int, int]] = []
     model_line_to_dest: dict[int, str] = {}
+    disable_aliases = plan.get("aliases_policy") == "disable"
     for entry in plan.get("entries", []):
         for alias in entry.get("aliases", []):
             start = alias.get("start_line")
             end = alias.get("end_line")
             model_line = alias.get("model_line")
-            if start and end:
+            if disable_aliases and start and end:
                 comment_ranges.append((int(start), int(end)))
             if model_line:
                 model_line_to_dest[int(model_line)] = entry["destination"]
@@ -396,8 +407,105 @@ def _updated_ini_for_archive(original_text: str, plan: dict[str, Any]) -> str:
                 replacements[lineno] = _comment_line(lines[lineno - 1])
     for lineno, destination in model_line_to_dest.items():
         if 1 <= lineno <= len(lines):
-            replacements[lineno] = _commented_assignment(lines[lineno - 1], "model", destination)
+            if disable_aliases:
+                replacements[lineno] = _commented_assignment(lines[lineno - 1], "model", destination)
+            else:
+                replacements[lineno] = f"model = {destination}"
     return "\n".join(replacements.get(i, line) for i, line in enumerate(lines, start=1)) + "\n"
+
+
+def _uncomment_line(line: str) -> str:
+    indent = line[: len(line) - len(line.lstrip())]
+    stripped = line.lstrip()
+    if not stripped.startswith("#"):
+        return line
+    content = stripped[1:]
+    if content.startswith(" "):
+        content = content[1:]
+    return indent + content
+
+
+def _updated_ini_for_restore(original_text: str, archive_path: str, active_path: str, reenable_aliases: bool = False) -> str:
+    lines = original_text.splitlines()
+    result: list[str] = []
+    in_matching_disabled_section = False
+    section_has_archive_path = False
+    section_buffer: list[str] = []
+
+    def flush_section() -> None:
+        nonlocal section_buffer, in_matching_disabled_section, section_has_archive_path
+        if not section_buffer:
+            return
+        should_uncomment = reenable_aliases and in_matching_disabled_section and section_has_archive_path
+        for buffered in section_buffer:
+            line = _uncomment_line(buffered) if should_uncomment else buffered
+            if archive_path in line:
+                line = line.replace(archive_path, active_path)
+            result.append(line)
+        section_buffer = []
+        in_matching_disabled_section = False
+        section_has_archive_path = False
+
+    for line in lines:
+        commented, content = _strip_comment_prefix(line)
+        if _parse_section_header(content) is not None:
+            flush_section()
+            in_matching_disabled_section = commented
+            section_buffer = [line]
+            section_has_archive_path = archive_path in content
+            continue
+        if section_buffer:
+            section_buffer.append(line)
+            if archive_path in content or archive_path in line:
+                section_has_archive_path = True
+            continue
+        result.append(line.replace(archive_path, active_path))
+    flush_section()
+    return "\n".join(result) + ("\n" if result else "")
+
+
+def apply_restore_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    if plan.get("action") != "restore_models":
+        raise ValueError("not a restore plan")
+    errors = [w for w in plan.get("warnings", []) if w.startswith(("archive source missing", "target active file already exists"))]
+    if errors:
+        raise ValueError("restore plan is not safely applicable: " + "; ".join(errors))
+
+    router_ini = Path(plan["router_ini"]).expanduser()
+    original_text = router_ini.read_text(encoding="utf-8")
+    applied = dict(plan)
+    applied["applied_at"] = _utc_now()
+    applied["original_ini_sha256"] = _sha256_text(original_text)
+    backup_path = router_ini.with_suffix(router_ini.suffix + ".restore.bak")
+    applied["router_ini_backup"] = str(backup_path)
+
+    restored: list[dict[str, str]] = []
+    try:
+        text = original_text
+        for entry in applied.get("entries", []):
+            source = Path(entry["source"])
+            destination = Path(entry["destination"])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(destination))
+            restored.append({"source": str(source), "destination": str(destination)})
+            text = _updated_ini_for_restore(
+                text,
+                str(source),
+                str(destination),
+                reenable_aliases=bool(entry.get("reenable_aliases")),
+            )
+        _atomic_write_text(backup_path, original_text)
+        _atomic_write_text(router_ini, text)
+        applied["restored"] = restored
+        return applied
+    except Exception:
+        for item in reversed(restored):
+            destination = Path(item["destination"])
+            source = Path(item["source"])
+            if destination.exists() and not source.exists():
+                source.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(destination), str(source))
+        raise
 
 
 def _updated_ini_for_delete(original_text: str, plan: dict[str, Any]) -> str:
@@ -419,8 +527,54 @@ def _updated_ini_for_delete(original_text: str, plan: dict[str, Any]) -> str:
     return "\n".join(collapsed) + ("\n" if collapsed else "")
 
 
-def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """Apply a confirmed delete plan: backup ini, remove aliases, delete files."""
+def _section_lines(original_text: str, alias: dict[str, Any]) -> list[str]:
+    lines = original_text.splitlines()
+    start = int(alias.get("start_line") or 0)
+    end = int(alias.get("end_line") or 0)
+    if start < 1 or end < start:
+        return []
+    return lines[start - 1 : end]
+
+
+def focused_delete_manifest(plan: dict[str, Any], original_text: str) -> dict[str, Any]:
+    model_path = Path(plan["model_path"]).expanduser()
+    affected_aliases = []
+    affected_sections = []
+    for alias in plan.get("aliases", []):
+        params = dict(alias.get("params") or {})
+        affected_aliases.append(
+            {
+                "section": alias.get("section"),
+                "enabled": alias.get("enabled"),
+                "model_path": alias.get("model_path"),
+                "params": params,
+            }
+        )
+        affected_sections.append(
+            {
+                "section": alias.get("section"),
+                "enabled": alias.get("enabled"),
+                "lines": _section_lines(original_text, alias),
+            }
+        )
+    return {
+        "version": 1,
+        "action": "recover_deleted_model",
+        "deleted_at": _utc_now(),
+        "router_ini": plan.get("router_ini"),
+        "deleted_model_path": str(model_path),
+        "model_filename": model_path.name,
+        "model_size_bytes": model_path.stat().st_size if model_path.exists() else None,
+        "model_sha256": _sha256_file(model_path),
+        "source_metadata": plan.get("source_metadata") or {},
+        "affected_aliases": affected_aliases,
+        "affected_sections": affected_sections,
+        "reason": plan.get("reason"),
+    }
+
+
+def apply_delete_plan(plan: dict[str, Any], manifest_path: str | Path | None = None) -> dict[str, Any]:
+    """Apply a confirmed delete plan: write focused recovery manifest, remove aliases, delete files."""
     if plan.get("action") != "delete_model":
         raise ValueError("not a delete plan")
     router_ini_value = plan.get("router_ini")
@@ -430,11 +584,13 @@ def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
     original_text = router_ini.read_text(encoding="utf-8")
     applied = dict(plan)
     applied["applied_at"] = _utc_now()
-    applied["original_ini_sha256"] = _sha256_text(original_text)
-    backup_path = router_ini.with_suffix(router_ini.suffix + ".delete.bak")
-    applied["router_ini_backup"] = str(backup_path)
 
-    _atomic_write_text(backup_path, original_text)
+    manifest = focused_delete_manifest(plan, original_text)
+    if manifest_path is not None:
+        recovery_path = Path(manifest_path).expanduser()
+        _atomic_write_text(recovery_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        applied["recovery_manifest"] = str(recovery_path)
+
     _atomic_write_text(router_ini, _updated_ini_for_delete(original_text, applied))
     deleted_files: list[str] = []
     try:
@@ -450,8 +606,41 @@ def apply_delete_plan(plan: dict[str, Any]) -> dict[str, Any]:
         raise
 
 
+def apply_recover_manifest(manifest: dict[str, Any], router_ini: str | Path | None = None) -> dict[str, Any]:
+    if manifest.get("action") != "recover_deleted_model":
+        raise ValueError("not a delete recovery manifest")
+    model_path = Path(manifest.get("deleted_model_path") or "").expanduser()
+    if not model_path.exists():
+        raise ValueError(f"model file is still missing: {model_path}")
+    router_ini_path = Path(router_ini or manifest.get("router_ini") or "").expanduser()
+    if not str(router_ini_path):
+        raise ValueError("recovery manifest has no router_ini")
+    original_text = router_ini_path.read_text(encoding="utf-8") if router_ini_path.exists() else ""
+    imported = detect_from_ini(router_ini_path)
+    existing_sections = {alias.get("section") for alias in imported.get("aliases", [])}
+    manifest_sections = [section for section in manifest.get("affected_sections", []) if section.get("section")]
+    conflicts = [section["section"] for section in manifest_sections if section["section"] in existing_sections]
+    if conflicts:
+        raise ValueError("alias conflict: " + ", ".join(conflicts))
+
+    chunks = [original_text.rstrip()] if original_text.strip() else []
+    restored_sections: list[str] = []
+    for section in manifest_sections:
+        lines = list(section.get("lines") or [])
+        if not lines:
+            alias = next((a for a in manifest.get("affected_aliases", []) if a.get("section") == section.get("section")), None)
+            params = dict(alias.get("params") or {}) if alias else {}
+            lines = [f"[{section['section']}]"] + [f"{key} = {value}" for key, value in params.items()]
+        if chunks:
+            chunks.append("")
+        chunks.extend(lines)
+        restored_sections.append(section["section"])
+    _atomic_write_text(router_ini_path, "\n".join(chunks).rstrip() + "\n")
+    return {"recovered": True, "router_ini": str(router_ini_path), "sections": restored_sections}
+
+
 def apply_archive_plan(plan: dict[str, Any], plan_path: str | Path | None = None) -> dict[str, Any]:
-    """Apply an archive plan: backup ini, disable aliases, move files, write rollback metadata."""
+    """Apply an archive plan: backup ini, update aliases, move files, write movement metadata."""
     if plan.get("action") != "archive_models":
         raise ValueError("not an archive plan")
     errors = [w for w in plan.get("warnings", []) if w.startswith(("source missing", "source is already", "destination already"))]
