@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import os
-import re
+import re as regex
 import shutil
 import subprocess
 import sys
@@ -594,29 +594,180 @@ def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     return 0
 
 
-def _resolve_model_target(imported: dict[str, Any], target: str) -> str | None:
+def _normalize_name(name: str) -> str:
+    """Normalize a name for matching: strip non-alphanumeric suffixes, lowercase, replace separators with hyphen."""
+    # Strip './' prefix from relative paths
+    if name.startswith("./"):
+        name = name[2:]
+    # Normalize separators first (case-insensitive, hyphen/underscore/dot/space equivalent)
+    name = regex.sub(r"[\s_.]+", "-", name.lower())
+    # Strip known suffixes: .gguf, -gguf, -hyphen, -underscore
+    name = regex.sub(r"[-_]?gguf$", "", name)
+    name = regex.sub(r"[-_]?hyphen$", "", name)
+    name = regex.sub(r"[-_]?underscore$", "", name)
+    return name
+
+
+def _resolve_model_target(imported: dict[str, Any], target: str) -> tuple[str | None, list[str] | None]:
+    """Resolve a model target to a path, returning (path, ambiguous_candidates).
+
+    Resolution order:
+    1. Exact path match
+    2. Exact filename/stem match
+    3. Normalized (case-insensitive, separator-agnostic) match
+    4. Return ambiguous candidates if multiple matches found
+    """
+    ambiguous_candidates: list[str] | None = None
+
+    # Check for path: prefix
     if target.startswith("path:"):
-        return target.split(":", 1)[1]
+        path = target.split(":", 1)[1]
+        # Try to resolve relative paths
+        if not Path(path).is_absolute():
+            models = imported.get("models", [])
+            for model in models:
+                model_path = Path(model["path"]).expanduser()
+                resolved = model_path.resolve() if model_path.is_relative() else model_path
+                if resolved == Path(path).resolve() or resolved.name == Path(path).name:
+                    return model["path"], None
+        return path, None
+
+    # Check for model: prefix
+    if target.startswith("model:"):
+        ref = target.split(":", 1)[1]
+        return _resolve_model_target_by_ref(imported, ref, ambiguous_candidates), ambiguous_candidates
+
+    # Check for numeric model ID
     if target.isdigit():
         idx = int(target) - 1
         models = imported.get("models", [])
         if 0 <= idx < len(models):
-            return models[idx]["path"]
-    if target.startswith("model:"):
-        ref = target.split(":", 1)[1]
-        if ref.isdigit():
-            idx = int(ref) - 1
-            models = imported.get("models", [])
-            if 0 <= idx < len(models):
-                return models[idx]["path"]
-        for model in imported.get("models", []):
-            if model["path"] == ref or Path(model["path"]).name == ref:
-                return model["path"]
-    # Fallback: direct path or filename match.
+            return models[idx]["path"], None
+        return None, None
+
+    # Try exact path match first
     for model in imported.get("models", []):
-        if target == model["path"] or target == Path(model["path"]).name:
-            return model["path"]
-    return None
+        if target == model["path"]:
+            return model["path"], None
+
+    # Try exact filename/stem match
+    # Strip ./ prefix from target for comparison
+    target_for_match = Path(target).name if not Path(target).is_absolute() else target
+    for model in imported.get("models", []):
+        model_path = Path(model["path"])
+        if target_for_match == model_path.name or target_for_match == model_path.stem:
+            return model["path"], None
+
+    # Try matching targets with suffixes to files without suffixes
+    # e.g., "Llama-3.2-3B-Instruct-UD-Q8_K_XL-hyphen" matches "Llama-3.2-3B-Instruct-UD-Q8_K_XL"
+    target_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", target_for_match)
+    # Normalize separators (dots, underscores, spaces all to hyphens) for comparison
+    target_stripped = target_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
+    matches: list[str] = []
+    for model in imported.get("models", []):
+        model_path = Path(model["path"])
+        # Also strip suffix from model name for comparison
+        model_stem_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.stem)
+        model_name_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.name)
+        # Normalize separators in model names for comparison
+        model_stem_stripped = model_stem_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
+        model_name_stripped = model_name_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
+        # Check if target without suffix matches model name or stem exactly
+        if target_stripped == model_name_stripped or target_stripped == model_stem_stripped:
+            matches.append(model["path"])
+
+    # If exact match found, return it
+    if len(matches) == 1:
+        return matches[0], None
+
+    # If multiple exact matches, it's ambiguous
+    if len(matches) > 1:
+        ambiguous_candidates = matches
+        return None, ambiguous_candidates
+
+    # Try normalized matching (case-insensitive, separator-agnostic)
+    normalized_target = _normalize_name(target)
+    matches: list[str] = []
+    for model in imported.get("models", []):
+        path = Path(model["path"])
+        normalized_path = _normalize_name(path.name)
+        if normalized_target == normalized_path:
+            matches.append(model["path"])
+
+    if len(matches) == 1:
+        return matches[0], None
+    elif len(matches) > 1:
+        ambiguous_candidates = matches
+        return None, ambiguous_candidates
+
+    return None, None
+
+
+def _resolve_model_target_by_ref(imported: dict[str, Any], ref: str, ambiguous_candidates: list[str] | None = None) -> tuple[str | None, list[str] | None]:
+    """Resolve a model by ref (path, name, or normalized).
+
+    Resolution order:
+    1. Exact path match
+    2. Exact filename/stem match
+    3. Normalized (case-insensitive, separator-agnostic) match
+    """
+    # Try exact path match
+    for model in imported.get("models", []):
+        if ref == model["path"]:
+            return model["path"], None
+
+    # Try exact filename/stem match
+    # Strip ./ prefix from ref for comparison
+    ref_for_match = Path(ref).name if not Path(ref).is_absolute() else ref
+    for model in imported.get("models", []):
+        path = Path(model["path"])
+        if ref_for_match == path.name or ref_for_match == path.stem:
+            return model["path"], None
+
+    # Try matching refs with suffixes to files without suffixes
+    ref_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", ref_for_match)
+    # Normalize separators (dots, underscores, spaces all to hyphens) for comparison
+    ref_stripped = ref_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
+    matches: list[str] = []
+    for model in imported.get("models", []):
+        path = Path(model["path"])
+        # Also strip suffix from model name for comparison
+        model_stem_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.stem)
+        model_name_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.name)
+        # Normalize separators in model names for comparison
+        model_stem_stripped = model_stem_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
+        model_name_stripped = model_name_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
+        # Check if ref without suffix matches model name or stem exactly
+        if ref_stripped == model_name_stripped or ref_stripped == model_stem_stripped:
+            matches.append(model["path"])
+
+    # If exact match found, return it
+    if len(matches) == 1:
+        return matches[0], None
+
+    # If multiple exact matches, it's ambiguous
+    if len(matches) > 1:
+        ambiguous_candidates = matches
+        return None, ambiguous_candidates
+
+    # Try normalized matching
+    normalized_ref = _normalize_name(ref)
+    normalized_ref_path = _normalize_name(Path(ref).name) if Path(ref).exists() else _normalize_name(ref)
+
+    matches: list[str] = []
+    for model in imported.get("models", []):
+        path = Path(model["path"])
+        normalized_path = _normalize_name(path.name)
+        if normalized_ref == normalized_path:
+            matches.append(model["path"])
+
+    if len(matches) == 1:
+        return matches[0], None
+    elif len(matches) > 1:
+        ambiguous_candidates = matches
+        return None, ambiguous_candidates
+
+    return None, None
 
 
 def _resolve_alias_target(imported: dict[str, Any], target: str) -> dict[str, Any] | None:
@@ -1069,13 +1220,24 @@ def _archive_targets(args: argparse.Namespace, imported: dict[str, Any]) -> list
         return None
     targets: list[str] = []
     for target in args.target:
-        model_path = _resolve_model_target(imported, target)
+        result = _resolve_model_target(imported, target)
+        model_path = result[0] if result else None
         if model_path is None:
             alias = _resolve_alias_target(imported, target)
             model_path = alias.get("model_path") if alias else None
         if model_path is None:
-            print(f"Could not resolve model or alias target: {target}", file=sys.stderr)
-            print("Try: modelctl list", file=sys.stderr)
+            candidates = result[1] if len(result) > 1 else None
+            if candidates:
+                print(f"ambiguous '{target}' matches multiple models: {', '.join(candidates)}", file=sys.stderr)
+                print(f"candidates: {', '.join(candidates)}", file=sys.stderr)
+            else:
+                path = Path(target)
+                print(f"Could not resolve model or alias target: {target}", file=sys.stderr)
+                print(f"tried filename: {path.name}", file=sys.stderr)
+                print(f"tried stem: {path.stem}", file=sys.stderr)
+                print(f"tried path: {path}", file=sys.stderr)
+                print(f"tried normalized: '{_normalize_name(target)}' -> '{_normalize_name(path.name)}'", file=sys.stderr)
+                print("Use 'modelctl list' to see all available models.", file=sys.stderr)
             return None
         targets.append(model_path)
     return targets
