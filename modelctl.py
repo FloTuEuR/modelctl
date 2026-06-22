@@ -538,8 +538,52 @@ def _print_list(imported: dict[str, Any]) -> None:
         print(f"a{idx:<3} {state:<9} {alias['section']:<16} {alias['model_path']}")
 
 
+
+def _print_models_only(models: list[dict[str, Any]]) -> None:
+    print("Models")
+    print("ID  STATUS                         SIZE       ALIASES  PATH")
+    for idx, model in enumerate(models, start=1):
+        location = str(model.get("location", "active"))
+        file_state = str(model.get("state", "unknown"))
+        alias_count = len(model.get("aliases", []))
+        status = f"{location}/{file_state}"
+        print(f"{idx:<3} {status:<30} {_format_size(model.get('size_bytes')):<10} {alias_count:<7} {model['path']}")
+
+
+def _print_aliases_only(aliases: list[dict[str, Any]], imported: dict[str, Any]) -> None:
+    print("Aliases")
+    print("ID   STATE     SECTION          MODEL")
+    for alias in aliases:
+        state = "enabled" if alias.get("enabled") else "disabled"
+        print(f"{_alias_ref(imported, alias):<4} {state:<9} {alias['section']:<16} {alias['model_path']}")
+
+
+def _server_discovery_payload(config: configparser.ConfigParser) -> dict[str, Any]:
+    timeout = config.getfloat("monitor", "discovery_timeout", fallback=0.5)
+    candidates = []
+    for candidate in _monitor_discovery_endpoints(config):
+        probed = _query_models_endpoint(candidate["endpoint"], timeout)
+        probed["source"] = candidate["source"]
+        candidates.append(probed)
+    reachable = [candidate for candidate in candidates if candidate["reachable"]]
+    return {"candidates": candidates, "found_count": len(reachable), "selected": reachable[0]["endpoint"] if len(reachable) == 1 else None, "mutated": False}
+
+
+def _print_servers_only(config: configparser.ConfigParser) -> None:
+    data = _server_discovery_payload(config)
+    print("Servers")
+    print("  read-only discovery; no service mutation performed")
+    print(f"  found count: {data['found_count']}")
+    if not data["found_count"]:
+        print("  no server found through configured/default monitor discovery")
+    for candidate in data["candidates"]:
+        state = "reachable" if candidate.get("reachable") else "not reachable"
+        print(f"  - {candidate['endpoint']} ({state}, {candidate['source']})")
+
+
 def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
+    target = getattr(args, "target", None)
     show_active = getattr(args, "active", False)
     show_archived = getattr(args, "archived", False)
     show_enabled = getattr(args, "enabled", False)
@@ -550,244 +594,333 @@ def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     if show_enabled and show_disabled:
         print("Cannot combine --enabled and --disabled", file=sys.stderr)
         return 2
-    filters_applied: dict[str, bool] = {}
+
     models = imported.get("models", [])
+    aliases_data = imported.get("aliases", [])
+    filters_applied: dict[str, bool] = {}
     if show_active:
         models = [m for m in models if m.get("location", "active") == "active"]
         filters_applied["active"] = True
     elif show_archived:
         models = [m for m in models if m.get("location") == "archived"]
         filters_applied["archived"] = True
-    aliases_data = imported.get("aliases", [])
     if show_enabled:
         aliases_data = [a for a in aliases_data if a.get("enabled")]
         filters_applied["enabled"] = True
     elif show_disabled:
         aliases_data = [a for a in aliases_data if not a.get("enabled")]
         filters_applied["disabled"] = True
+
+    kind = None
+    if target:
+        t = target.lower()
+        if t in {"model", "models"}:
+            kind = "models"
+        elif t in {"alias", "aliases"}:
+            kind = "aliases"
+        elif t in {"server", "servers"}:
+            kind = "servers"
+        else:
+            resolved = _resolve_target(imported, target)
+            if not resolved.get("ok"):
+                if getattr(args, "json", False):
+                    payload = _target_error_payload(target, resolved.get("candidates"), resolved.get("suggestions"))
+                    _print_json(_json_envelope("list", payload, status="error", error={"code": resolved.get("code"), "message": f"Could not resolve target: {target}"}))
+                else:
+                    _print_target_error(target, candidates=resolved.get("candidates"), suggestions=resolved.get("suggestions"))
+                return 2
+            if resolved["kind"] == "model":
+                model_path = resolved["path"]
+                aliases_for_model = [a for a in aliases_data if a.get("model_path") == model_path]
+                if getattr(args, "json", False):
+                    _print_json(_json_envelope("list", {"target": target, "resolved_target": resolved["resolved_target"], "aliases": [_candidate_for_alias(imported, a) for a in aliases_for_model]}))
+                else:
+                    print(f"Aliases for {model_path}")
+                    _print_aliases_only(aliases_for_model, imported)
+                return 0
+            alias = resolved["alias"]
+            if getattr(args, "json", False):
+                _print_json(_json_envelope("list", {"target": target, "resolved_target": resolved["resolved_target"], "aliases": [_candidate_for_alias(imported, alias)]}))
+            else:
+                _print_aliases_only([alias], imported)
+            return 0
+
     if getattr(args, "json", False):
-        model_list = []
-        for idx, model in enumerate(models, start=1):
-            model_list.append({
-                "id": idx,
-                "path": model.get("path"),
-                "state": model.get("state"),
-                "location": model.get("location", "active"),
-                "size_bytes": model.get("size_bytes"),
-                "aliases": list(model.get("aliases", [])),
-            })
-        alias_list = []
-        for idx, alias in enumerate(aliases_data, start=1):
-            alias_list.append({
-                "id": f"a{idx}",
-                "section": alias.get("section"),
-                "enabled": bool(alias.get("enabled")),
-                "model_path": alias.get("model_path"),
-            })
-        data: dict[str, Any] = {"models": model_list, "aliases": alias_list}
+        data: dict[str, Any] = {}
+        if kind in (None, "models"):
+            data["models"] = [{"id": idx, "path": m.get("path"), "state": m.get("state"), "location": m.get("location", "active"), "size_bytes": m.get("size_bytes"), "aliases": list(m.get("aliases", []))} for idx, m in enumerate(models, start=1)]
+        if kind in (None, "aliases"):
+            data["aliases"] = [{"id": f"a{idx}", "section": a.get("section"), "enabled": bool(a.get("enabled")), "model_path": a.get("model_path")} for idx, a in enumerate(aliases_data, start=1)]
+        if kind in (None, "servers"):
+            data["servers"] = _server_discovery_payload(config)
         if filters_applied:
             data["filters_applied"] = filters_applied
         _print_json(_json_envelope("list", data))
         return 0
-    filtered_imported = dict(imported, models=models, aliases=aliases_data)
-    _print_list(filtered_imported)
+    if kind == "models":
+        _print_models_only(models); return 0
+    if kind == "aliases":
+        _print_aliases_only(aliases_data, imported); return 0
+    if kind == "servers":
+        _print_servers_only(config); return 0
+    _print_models_only(models)
+    print("")
+    _print_aliases_only(aliases_data, imported)
+    print("")
+    _print_servers_only(config)
     return 0
 
 
-def _normalize_name(name: str) -> str:
-    """Normalize a name for matching: strip non-alphanumeric suffixes, lowercase, replace separators with hyphen."""
-    # Strip './' prefix from relative paths
-    if name.startswith("./"):
-        name = name[2:]
-    # Normalize separators first (case-insensitive, hyphen/underscore/dot/space equivalent)
-    name = re.sub(r"[\s_.]+", "-", name.lower())
-    # Strip known suffixes: .gguf, -gguf, -hyphen, -underscore
-    name = re.sub(r"[-_]?gguf$", "", name)
-    name = re.sub(r"[-_]?hyphen$", "", name)
-    name = re.sub(r"[-_]?underscore$", "", name)
-    return name
+def _target_key(value: str) -> str:
+    """Case/separator-insensitive key; optional .gguf is ignored."""
+    text = Path(str(value).strip()).name
+    if text.lower().endswith(".gguf"):
+        text = text[:-5]
+    key = re.sub(r"[^a-z0-9]+", "", text.lower())
+    for suffix in ("hyphen", "underscore"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+    return key
 
 
-def _resolve_model_target_with_candidates(imported: dict[str, Any], target: str) -> tuple[str | None, list[str] | None]:
-    """Resolve a model target to a path, returning (path, ambiguous_candidates).
+def _target_slug(value: str) -> str:
+    text = Path(str(value).strip()).name
+    if text.lower().endswith(".gguf"):
+        text = text[:-5]
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
-    Resolution order:
-    1. Exact path match
-    2. Exact filename/stem match
-    3. Normalized (case-insensitive, separator-agnostic) match
-    4. Return ambiguous candidates if multiple matches found
-    """
-    ambiguous_candidates: list[str] | None = None
 
-    # Check for path: prefix
-    if target.startswith("path:"):
-        path = target.split(":", 1)[1]
-        # Try to resolve relative paths
-        if not Path(path).is_absolute():
-            models = imported.get("models", [])
-            for model in models:
-                model_path = Path(model["path"]).expanduser()
-                resolved = model_path.resolve() if model_path.is_relative() else model_path
-                if resolved == Path(path).resolve() or resolved.name == Path(path).name:
-                    return model["path"], None
-        return path, None
+def _model_aliases(imported: dict[str, Any], model_path: str) -> list[dict[str, Any]]:
+    return [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
 
-    # Check for model: prefix
-    if target.startswith("model:"):
-        ref = target.split(":", 1)[1]
-        return _resolve_model_target_by_ref(imported, ref, ambiguous_candidates)
 
-    # Check for numeric model ID
-    if target.isdigit():
-        idx = int(target) - 1
-        models = imported.get("models", [])
-        if 0 <= idx < len(models):
-            return models[idx]["path"], None
-        return None, None
-
-    # Try exact path match first
+def _known_model_entries(imported: dict[str, Any]) -> list[dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
     for model in imported.get("models", []):
-        if target == model["path"]:
-            return model["path"], None
-
-    # Try exact filename/stem match
-    # Strip ./ prefix from target for comparison
-    target_for_match = Path(target).name if not Path(target).is_absolute() else target
-    for model in imported.get("models", []):
-        model_path = Path(model["path"])
-        if target_for_match == model_path.name or target_for_match == model_path.stem:
-            return model["path"], None
-
-    # Try matching targets with suffixes to files without suffixes
-    # e.g., "Llama-3.2-3B-Instruct-UD-Q8_K_XL-hyphen" matches "Llama-3.2-3B-Instruct-UD-Q8_K_XL"
-    target_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", target_for_match)
-    # Normalize separators (dots, underscores, spaces all to hyphens) for comparison
-    target_stripped = target_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
-    matches: list[str] = []
-    for model in imported.get("models", []):
-        model_path = Path(model["path"])
-        # Also strip suffix from model name for comparison
-        model_stem_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.stem)
-        model_name_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.name)
-        # Normalize separators in model names for comparison
-        model_stem_stripped = model_stem_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
-        model_name_stripped = model_name_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
-        # Check if target without suffix matches model name or stem exactly
-        if target_stripped == model_name_stripped or target_stripped == model_stem_stripped:
-            matches.append(model["path"])
-
-    # If exact match found, return it
-    if len(matches) == 1:
-        return matches[0], None
-
-    # If multiple exact matches, it's ambiguous
-    if len(matches) > 1:
-        ambiguous_candidates = matches
-        return None, ambiguous_candidates
-
-    # Try normalized matching (case-insensitive, separator-agnostic)
-    normalized_target = _normalize_name(target)
-    matches: list[str] = []
-    for model in imported.get("models", []):
-        path = Path(model["path"])
-        normalized_path = _normalize_name(path.name)
-        if normalized_target == normalized_path:
-            matches.append(model["path"])
-
-    if len(matches) == 1:
-        return matches[0], None
-    elif len(matches) > 1:
-        ambiguous_candidates = matches
-        return None, ambiguous_candidates
-
-    return None, None
+        path = str(model.get("path") or "")
+        if path:
+            entries[path] = dict(model)
+    for alias in imported.get("aliases", []):
+        path = str(alias.get("model_path") or "")
+        if path and path not in entries:
+            entries[path] = {"path": path, "state": "present" if Path(path).expanduser().exists() else "missing", "location": "active", "aliases": []}
+    for path in Path.cwd().glob("*.gguf"):
+        key = str(path)
+        if key not in entries:
+            entries[key] = {"path": key, "state": "present", "location": "active", "aliases": []}
+    return list(entries.values())
 
 
-def _resolve_model_target(imported: dict[str, Any], target: str) -> str | None:
-    """Resolve a model target to a path, preserving the legacy string/None API."""
-    model_path, _candidates = _resolve_model_target_with_candidates(imported, target)
-    return model_path
+def _alias_ref(imported: dict[str, Any], alias: dict[str, Any]) -> str:
+    try:
+        return f"a{imported.get('aliases', []).index(alias) + 1}"
+    except ValueError:
+        return "a?"
 
 
-def _resolve_model_target_by_ref(imported: dict[str, Any], ref: str, ambiguous_candidates: list[str] | None = None) -> tuple[str | None, list[str] | None]:
-    """Resolve a model by ref (path, name, or normalized).
+def _model_ref(imported: dict[str, Any], model_path: str) -> str | None:
+    for idx, model in enumerate(imported.get("models", []), start=1):
+        if model.get("path") == model_path:
+            return str(idx)
+    return None
 
-    Resolution order:
-    1. Exact path match
-    2. Exact filename/stem match
-    3. Normalized (case-insensitive, separator-agnostic) match
-    """
-    # Try exact path match
-    for model in imported.get("models", []):
-        if ref == model["path"]:
-            return model["path"], None
 
-    # Try exact filename/stem match
-    # Strip ./ prefix from ref for comparison
-    ref_for_match = Path(ref).name if not Path(ref).is_absolute() else ref
-    for model in imported.get("models", []):
-        path = Path(model["path"])
-        if ref_for_match == path.name or ref_for_match == path.stem:
-            return model["path"], None
+def _candidate_for_model(imported: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
+    path = str(model.get("path") or "")
+    aliases = _model_aliases(imported, path)
+    return {"type": "model", "ref": _model_ref(imported, path), "name": Path(path).name, "stem": Path(path).stem, "slug": _target_slug(path), "path": path, "location": model.get("location", "active"), "state": model.get("state", "unknown"), "aliases": [a.get("section") for a in aliases]}
 
-    # Try matching refs with suffixes to files without suffixes
-    ref_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", ref_for_match)
-    # Normalize separators (dots, underscores, spaces all to hyphens) for comparison
-    ref_stripped = ref_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
-    matches: list[str] = []
-    for model in imported.get("models", []):
-        path = Path(model["path"])
-        # Also strip suffix from model name for comparison
-        model_stem_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.stem)
-        model_name_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.name)
-        # Normalize separators in model names for comparison
-        model_stem_stripped = model_stem_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
-        model_name_stripped = model_name_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
-        # Check if ref without suffix matches model name or stem exactly
-        if ref_stripped == model_name_stripped or ref_stripped == model_stem_stripped:
-            matches.append(model["path"])
 
-    # If exact match found, return it
-    if len(matches) == 1:
-        return matches[0], None
+def _candidate_for_alias(imported: dict[str, Any], alias: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "alias", "ref": _alias_ref(imported, alias), "name": alias.get("section"), "slug": _target_slug(str(alias.get("section") or "")), "section": alias.get("section"), "path": alias.get("model_path"), "model_path": alias.get("model_path"), "state": "enabled" if alias.get("enabled") else "disabled", "enabled": bool(alias.get("enabled"))}
 
-    # If multiple exact matches, it's ambiguous
-    if len(matches) > 1:
-        ambiguous_candidates = matches
-        return None, ambiguous_candidates
 
-    # Try normalized matching
-    normalized_ref = _normalize_name(ref)
-    normalized_ref_path = _normalize_name(Path(ref).name) if Path(ref).exists() else _normalize_name(ref)
+def _format_candidate(candidate: dict[str, Any]) -> str:
+    if candidate.get("type") == "alias":
+        return f"{candidate.get('ref') or 'alias'}  {candidate.get('section')}  {candidate.get('state') or 'unknown'}  {candidate.get('model_path')}"
+    return f"{candidate.get('ref') or 'model'}  {candidate.get('stem') or candidate.get('name')}  {candidate.get('location') or 'unknown'}  {candidate.get('path')}"
 
-    matches: list[str] = []
-    for model in imported.get("models", []):
-        path = Path(model["path"])
-        normalized_path = _normalize_name(path.name)
-        if normalized_ref == normalized_path:
-            matches.append(model["path"])
 
-    if len(matches) == 1:
-        return matches[0], None
-    elif len(matches) > 1:
-        ambiguous_candidates = matches
-        return None, ambiguous_candidates
+def _target_error_payload(target: str, candidates: list[dict[str, Any]] | None = None, suggestions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {"target": target, "tried": ["alias/reference id", "alias/section name", "GGUF filename/stem", "relative/absolute path", "configured model/archive/download directories", "current directory"], "candidates": candidates or [], "suggestions": suggestions or []}
 
-    return None, None
+
+def _print_target_error(target: str, *, candidates: list[dict[str, Any]] | None = None, suggestions: list[dict[str, Any]] | None = None) -> None:
+    if candidates:
+        print(f"ambiguous target: {target}", file=sys.stderr)
+        print("candidates:", file=sys.stderr)
+        for candidate in candidates:
+            print(f"  - {_format_candidate(candidate)}", file=sys.stderr)
+    else:
+        print(f"Could not resolve target: {target}", file=sys.stderr)
+        print("Tried:", file=sys.stderr)
+        path = Path(target)
+        print(f"tried filename: {path.name}", file=sys.stderr)
+        print(f"tried stem: {path.stem}", file=sys.stderr)
+        print(f"tried path: {path}", file=sys.stderr)
+        for item in _target_error_payload(target)["tried"]:
+            print(f"  - {item}", file=sys.stderr)
+        if suggestions:
+            print("Closest matches:", file=sys.stderr)
+            for suggestion in suggestions:
+                print(f"  - {_format_candidate(suggestion)}", file=sys.stderr)
+    print("Try:", file=sys.stderr)
+    print("  modelctl list", file=sys.stderr)
+    print(f"  modelctl show {target}", file=sys.stderr)
+
+
+def _closest_candidates(imported: dict[str, Any], target: str, limit: int = 5) -> list[dict[str, Any]]:
+    key = _target_key(target)
+    if not key:
+        return []
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for alias in imported.get("aliases", []):
+        cand = _candidate_for_alias(imported, alias)
+        keys = [_target_key(str(alias.get("section") or "")), _target_key(str(cand.get("ref") or ""))]
+        score = max((len(os.path.commonprefix([key, k])) for k in keys if k), default=0)
+        if score:
+            scored.append((score, cand))
+    for model in _known_model_entries(imported):
+        cand = _candidate_for_model(imported, model)
+        keys = [_target_key(str(model.get("path") or "")), _target_key(Path(str(model.get("path") or "")).stem)]
+        score = max((len(os.path.commonprefix([key, k])) for k in keys if k), default=0)
+        if score:
+            scored.append((score, cand))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for _score, cand in scored:
+        ident = (str(cand.get("type")), str(cand.get("path") or cand.get("section")))
+        if ident in seen:
+            continue
+        seen.add(ident)
+        result.append(cand)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _match_aliases(imported: dict[str, Any], target: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ref = target.split(":", 1)[1] if target.startswith("alias:") else target
+    exact: list[dict[str, Any]] = []
+    partial: list[dict[str, Any]] = []
+    ref_key = _target_key(ref)
+    for idx, alias in enumerate(imported.get("aliases", []), start=1):
+        section = str(alias.get("section") or "")
+        names = {section, section.split(".")[-1], f"a{idx}"}
+        if ref in names or (target.startswith("alias:") and ref == section):
+            exact.append(alias)
+            continue
+        keys = {_target_key(name) for name in names if name}
+        if ref_key and ref_key in keys:
+            exact.append(alias)
+        elif ref_key and any(ref_key in key for key in keys):
+            partial.append(alias)
+    return exact, partial
 
 
 def _resolve_alias_target(imported: dict[str, Any], target: str) -> dict[str, Any] | None:
-    ref = target.split(":", 1)[1] if target.startswith("alias:") else target
-    if ref.startswith("a") and ref[1:].isdigit():
-        idx = int(ref[1:]) - 1
-        aliases = imported.get("aliases", [])
-        if 0 <= idx < len(aliases):
-            return aliases[idx]
-    for alias in imported.get("aliases", []):
-        if alias["section"] == ref or alias["section"].split(".")[-1] == ref:
-            return alias
-    return None
+    exact, partial = _match_aliases(imported, target)
+    matches = exact or partial
+    return matches[0] if len(matches) == 1 else None
 
+
+def _match_models(imported: dict[str, Any], target: str, *, prefer: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ref = target.split(":", 1)[1] if target.startswith(("model:", "path:")) else target
+    ref_path = Path(ref).expanduser()
+    ref_name = Path(ref).name
+    ref_key = _target_key(ref)
+    exact: list[dict[str, Any]] = []
+    partial: list[dict[str, Any]] = []
+    models = _known_model_entries(imported)
+    for idx, model in enumerate(models, start=1):
+        path = str(model.get("path") or "")
+        p = Path(path).expanduser()
+        if target.isdigit() and int(target) == idx:
+            exact.append(model); continue
+        if ref == path or ref_name in {Path(path).name, Path(path).stem}:
+            exact.append(model); continue
+        try:
+            if (ref_path.is_absolute() or "/" in ref or ref.startswith(".")) and ref_path.resolve() == p.resolve():
+                exact.append(model); continue
+        except OSError:
+            pass
+        keys = {_target_key(x) for x in (path, Path(path).name, Path(path).stem) if x}
+        if ref_key and ref_key in keys:
+            exact.append(model)
+        elif ref_key and any(ref_key in key for key in keys):
+            partial.append(model)
+    def sort_key(model: dict[str, Any]) -> tuple[int, str]:
+        loc = model.get("location", "active")
+        if prefer == "archived": pri = 0 if loc == "archived" else 1
+        elif prefer == "active": pri = 0 if loc != "archived" else 1
+        else: pri = 0
+        return (pri, str(model.get("path") or ""))
+    return sorted(exact, key=sort_key), sorted(partial, key=sort_key)
+
+
+def _resolve_model_result(imported: dict[str, Any], target: str, *, prefer: str | None = None) -> dict[str, Any]:
+    exact, partial = _match_models(imported, target, prefer=prefer)
+    matches = exact or partial
+    ref = target.split(":", 1)[1] if target.startswith(("model:", "path:")) else target
+    ref_name = Path(ref).name
+    if len(matches) > 1:
+        case_exact = [m for m in matches if ref == str(m.get("path") or "") or ref_name == Path(str(m.get("path") or "")).name or ref_name == Path(str(m.get("path") or "")).stem]
+        if len(case_exact) == 1:
+            matches = case_exact
+    if len(matches) > 1:
+        aliased = [m for m in matches if _model_aliases(imported, str(m.get("path") or ""))]
+        if len(aliased) == 1:
+            matches = aliased
+    if len(matches) > 1:
+        gguf_matches = [m for m in matches if str(m.get("path") or "").lower().endswith(".gguf")]
+        if len(gguf_matches) == 1:
+            matches = gguf_matches
+    if prefer and matches:
+        preferred = [m for m in matches if (m.get("location") == "archived") == (prefer == "archived")]
+        if len(preferred) == 1:
+            matches = preferred
+    if len(matches) == 1:
+        return {"ok": True, "kind": "model", "path": matches[0]["path"], "model": matches[0], "resolved_target": _candidate_for_model(imported, matches[0])}
+    if len(matches) > 1:
+        return {"ok": False, "code": "ambiguous_target", "candidates": [_candidate_for_model(imported, m) for m in matches], "suggestions": []}
+    return {"ok": False, "code": "target_not_found", "candidates": [], "suggestions": _closest_candidates(imported, target)}
+
+
+def _resolve_model_target_with_candidates(imported: dict[str, Any], target: str) -> tuple[str | None, list[str] | None]:
+    result = _resolve_model_result(imported, target)
+    if result.get("ok"):
+        return result["path"], None
+    candidates = [c.get("path") for c in result.get("candidates", []) if c.get("path")]
+    return None, candidates or None
+
+
+def _resolve_model_target(imported: dict[str, Any], target: str) -> str | None:
+    result = _resolve_model_result(imported, target)
+    return str(result["path"]) if result.get("ok") else None
+
+
+def _resolve_target(imported: dict[str, Any], target: str, *, prefer: str | None = None, alias_first: bool = False) -> dict[str, Any]:
+    if alias_first:
+        exact_aliases, partial_aliases = _match_aliases(imported, target)
+        alias_matches = exact_aliases or partial_aliases
+        if len(alias_matches) == 1:
+            alias = alias_matches[0]
+            return {"ok": True, "kind": "alias", "alias": alias, "resolved_target": _candidate_for_alias(imported, alias)}
+        if len(alias_matches) > 1:
+            return {"ok": False, "code": "ambiguous_target", "candidates": [_candidate_for_alias(imported, a) for a in alias_matches], "suggestions": []}
+    model_result = _resolve_model_result(imported, target, prefer=prefer)
+    if model_result.get("ok"):
+        return model_result
+    if not alias_first:
+        exact_aliases, partial_aliases = _match_aliases(imported, target)
+        alias_matches = exact_aliases or partial_aliases
+        if len(alias_matches) == 1:
+            alias = alias_matches[0]
+            return {"ok": True, "kind": "alias", "alias": alias, "resolved_target": _candidate_for_alias(imported, alias)}
+        if len(alias_matches) > 1:
+            return {"ok": False, "code": "ambiguous_target", "candidates": [_candidate_for_alias(imported, a) for a in alias_matches], "suggestions": []}
+    return model_result
 
 def _model_profile(model_path: str) -> dict[str, Any]:
     name = Path(model_path).name.lower()
@@ -911,81 +1044,50 @@ def _hf_key_for_alias(alias: dict[str, Any]) -> str | None:
     return None
 
 
+
 def cmd_show(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
-    model_path = _resolve_model_target(imported, args.target)
-    if model_path:
-        aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
-        key = _hf_key_for_alias(aliases[0]) if aliases else None
-        hf_state = _load_json(_state_dir() / 'hf-status.json') or {}
-        benchmark = _load_json(_benchmark_file(config, model_path))
-        gpu_vram_bytes = _gpu_vram_bytes(args)
+    resolved = _resolve_target(imported, args.target)
+    if not resolved.get("ok"):
         if getattr(args, "json", False):
-            model = next((m for m in imported.get("models", []) if m["path"] == model_path), None)
-            guidance = _estimate_model_guidance(
-                model,
-                gpu_vram_bytes=gpu_vram_bytes,
-                benchmark=benchmark,
-                hf_status=hf_state.get(key) if key else None,
-            )
-            aliases_data = [
-                {
-                    "section": a["section"],
-                    "state": "enabled" if a.get("enabled") else "disabled",
-                    "enabled": bool(a.get("enabled")),
-                }
-                for a in aliases
-            ]
-            model_data = {}
-            if model:
-                model_data.update(
-                    path=model_path,
-                    state=model["state"],
-                    location=model.get("location", "active"),
-                    size_bytes=model.get("size_bytes"),
-                )
-            model_data["aliases"] = aliases_data
-            model_data["guidance"] = guidance
-            _print_json(_json_envelope("show", {
-                "target": args.target,
-                "resolved_target": model_path,
-                "model": model_data,
-            }))
-            return 0
-        _print_model_details(imported, model_path, gpu_vram_bytes=gpu_vram_bytes, benchmark=benchmark, hf_status=hf_state.get(key) if key else None)
-        return 0
-    alias = _resolve_alias_target(imported, args.target)
-    if alias:
+            _print_json(_json_envelope("show", {}, status="error", error={"code": resolved.get("code"), "message": f"Could not resolve target: {args.target}", "details": _target_error_payload(args.target, resolved.get("candidates"), resolved.get("suggestions"))}))
+            return 2
+        _print_target_error(args.target, candidates=resolved.get("candidates"), suggestions=resolved.get("suggestions"))
+        return 2
+    if resolved["kind"] == "alias":
+        alias = resolved["alias"]
         if getattr(args, "json", False):
-            state = "enabled" if alias.get("enabled") else "disabled"
-            _print_json(_json_envelope("show", {
-                "target": args.target,
-                "resolved_target": alias["section"],
-                "alias": {
-                    "section": alias["section"],
-                    "state": state,
-                    "enabled": bool(alias.get("enabled")),
-                    "model_path": alias["model_path"],
-                    "params": alias.get("params", {}),
-                },
-            }))
+            _print_json(_json_envelope("show", {"target": args.target, "resolved_target": resolved["resolved_target"], "alias": {"ref": _alias_ref(imported, alias), "section": alias["section"], "state": "enabled" if alias.get("enabled") else "disabled", "enabled": bool(alias.get("enabled")), "model_path": alias["model_path"], "model_filename": Path(alias["model_path"]).name, "model_stem": Path(alias["model_path"]).stem, "params": alias.get("params", {})}}))
             return 0
         state = "enabled" if alias.get("enabled") else "disabled"
         print("Alias")
+        print(f"  ref: {_alias_ref(imported, alias)}")
         print(f"  section: {alias['section']}")
         print(f"  state: {state}")
         print(f"  model: {alias['model_path']}")
+        print(f"  model filename: {Path(alias['model_path']).name}")
+        print(f"  model stem: {Path(alias['model_path']).stem}")
         print("  params:")
         for key, value in sorted(alias.get("params", {}).items()):
             print(f"    {key}: {value}")
         return 0
+    model_path = resolved["path"]
+    aliases = [a for a in imported.get("aliases", []) if a.get("model_path") == model_path]
+    key = _hf_key_for_alias(aliases[0]) if aliases else None
+    hf_state = _load_json(_state_dir() / 'hf-status.json') or {}
+    benchmark = _load_json(_benchmark_file(config, model_path))
+    gpu_vram_bytes = _gpu_vram_bytes(args)
     if getattr(args, "json", False):
-        _print_json(_json_envelope("show", status="error", error={"code": "target_not_found", "message": f"Could not resolve target: {args.target}"}))
-        return 2
-    print(f"Could not resolve target: {args.target}", file=sys.stderr)
-    print("Try: modelctl list", file=sys.stderr)
-    return 2
-
+        model = next((m for m in _known_model_entries(imported) if m["path"] == model_path), None)
+        guidance = _estimate_model_guidance(model, gpu_vram_bytes=gpu_vram_bytes, benchmark=benchmark, hf_status=hf_state.get(key) if key else None)
+        aliases_data = [{"ref": _alias_ref(imported, a), "section": a["section"], "state": "enabled" if a.get("enabled") else "disabled", "enabled": bool(a.get("enabled"))} for a in aliases]
+        model_data = {"path": model_path, "filename": Path(model_path).name, "stem": Path(model_path).stem, "aliases": aliases_data, "referenced_by_enabled_aliases": any(a.get("enabled") for a in aliases), "referenced_by_disabled_aliases": any(not a.get("enabled") for a in aliases), "guidance": guidance}
+        if model:
+            model_data.update(state=model.get("state"), location=model.get("location", "active"), size_bytes=model.get("size_bytes"))
+        _print_json(_json_envelope("show", {"target": args.target, "resolved_target": resolved["resolved_target"], "model": model_data}))
+        return 0
+    _print_model_details(imported, model_path, gpu_vram_bytes=gpu_vram_bytes, benchmark=benchmark, hf_status=hf_state.get(key) if key else None)
+    return 0
 
 def cmd_aliases(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
@@ -1210,6 +1312,7 @@ def _print_archive_plan(plan: dict[str, Any], dry_run: bool) -> None:
         print(f"  warning: {warning}")
 
 
+
 def _archive_targets(args: argparse.Namespace, imported: dict[str, Any]) -> list[str] | None:
     if args.group:
         if args.group.lower() != "lab":
@@ -1225,43 +1328,45 @@ def _archive_targets(args: argparse.Namespace, imported: dict[str, Any]) -> list
         print("archive needs at least one model target or --group lab", file=sys.stderr)
         return None
     targets: list[str] = []
+    resolved_meta: list[dict[str, Any]] = []
     for target in args.target:
-        result = _resolve_model_target_with_candidates(imported, target)
-        model_path = result[0] if result else None
-        if model_path is None:
-            alias = _resolve_alias_target(imported, target)
-            model_path = alias.get("model_path") if alias else None
-        if model_path is None:
-            candidates = result[1] if len(result) > 1 else None
-            if candidates:
-                print(f"ambiguous '{target}' matches multiple models: {', '.join(candidates)}", file=sys.stderr)
-                print(f"candidates: {', '.join(candidates)}", file=sys.stderr)
+        resolved = _resolve_target(imported, target, prefer="active")
+        if not resolved.get("ok"):
+            if getattr(args, "json", False):
+                args._target_error = resolved
             else:
-                path = Path(target)
-                print(f"Could not resolve model or alias target: {target}", file=sys.stderr)
-                print(f"tried filename: {path.name}", file=sys.stderr)
-                print(f"tried stem: {path.stem}", file=sys.stderr)
-                print(f"tried path: {path}", file=sys.stderr)
-                print(f"tried normalized: '{_normalize_name(target)}' -> '{_normalize_name(path.name)}'", file=sys.stderr)
-                print("Use 'modelctl list' to see all available models.", file=sys.stderr)
+                _print_target_error(target, candidates=resolved.get("candidates"), suggestions=resolved.get("suggestions"))
+            return None
+        if resolved["kind"] == "alias":
+            alias = resolved["alias"]
+            model_path = alias.get("model_path")
+            meta = _candidate_for_alias(imported, alias)
+        else:
+            model_path = resolved["path"]
+            meta = resolved["resolved_target"]
+        if not model_path:
             return None
         targets.append(model_path)
+        resolved_meta.append(meta)
+    args._resolved_targets = resolved_meta
     return targets
-
 
 def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     imported = _import_from_config(config)
     targets = _archive_targets(args, imported)
     if targets is None:
         if getattr(args, 'json', False):
-            _print_json(_json_envelope("archive", {}, status="error",
-                error={"code": "target_not_found", "message": "Could not resolve archive target(s)"}))
+            err = getattr(args, "_target_error", {}) or {}
+            payload = _target_error_payload(" ".join(getattr(args, "target", []) or []), err.get("candidates"), err.get("suggestions"))
+            _print_json(_json_envelope("archive", payload, status="error",
+                error={"code": err.get("code", "target_not_found"), "message": "Could not resolve archive target(s)"}))
         return 2
     plan = plan_archive_models(imported, targets, disable_aliases=bool(getattr(args, "disable_aliases", False)))
     if getattr(args, 'dry_run', False):
         if getattr(args, 'json', False):
             data = {
                 "targets": targets,
+                "resolved_target": getattr(args, "_resolved_targets", []),
                 "dry_run": True,
                 "would_move_file": False,
                 "would_update_ini": False,
@@ -1314,6 +1419,7 @@ def cmd_archive(args: argparse.Namespace, config: configparser.ConfigParser) -> 
             affected.extend(entry.get("aliases_impacted", []))
         _print_json(_json_envelope("archive", {
             "targets": targets,
+            "resolved_target": getattr(args, "_resolved_targets", []),
             "applied": True,
             "dry_run": False,
             "moved": applied.get("moved", []),
@@ -1453,24 +1559,51 @@ def _rewrite_alias_block(router_ini: Path, section: str, enable: bool) -> bool:
     return changed
 
 
+
 def cmd_enable_disable(args: argparse.Namespace, config: configparser.ConfigParser, enable: bool) -> int:
     imported = _import_from_config(config)
-    alias = _resolve_alias_target(imported, args.target)
-    if not alias:
-        print(f"Could not resolve alias target: {args.target}", file=sys.stderr)
-        print("Try: modelctl list", file=sys.stderr)
+    resolved = _resolve_target(imported, args.target, alias_first=True)
+    if not resolved.get("ok"):
+        if getattr(args, "json", False):
+            payload = _target_error_payload(args.target, resolved.get("candidates"), resolved.get("suggestions"))
+            _print_json(_json_envelope("enable" if enable else "disable", payload, status="error", error={"code": resolved.get("code"), "message": f"Could not resolve target: {args.target}"}))
+            return 2
+        _print_target_error(args.target, candidates=resolved.get("candidates"), suggestions=resolved.get("suggestions"))
         return 2
+    if resolved["kind"] == "alias":
+        aliases = [resolved["alias"]]
+    else:
+        aliases = _model_aliases(imported, resolved["path"])
+        if not aliases:
+            msg = f"No aliases point to model target: {args.target}"
+            if getattr(args, "json", False):
+                _print_json(_json_envelope("enable" if enable else "disable", {"target": args.target, "resolved_target": resolved["resolved_target"], "affected_aliases": [], "changed_count": 0}, status="error", error={"code": "no_aliases", "message": msg}))
+                return 2
+            print(msg, file=sys.stderr)
+            return 2
     action = "enable" if enable else "disable"
+    affected = [_candidate_for_alias(imported, a) for a in aliases]
     if getattr(args, 'dry_run', False):
-        print(f"DRY RUN: would {action} alias [{alias['section']}] in router ini")
-        print(f"  model: {alias['model_path']}")
+        if getattr(args, "json", False):
+            _print_json(_json_envelope(action, {"target": args.target, "resolved_target": resolved["resolved_target"], "dry_run": True, "affected_aliases": affected, "changed_count": len(aliases), "would_update_ini": False}))
+            return 0
+        print(f"DRY RUN: would {action} {len(aliases)} alias(es) in router ini")
+        for alias in aliases:
+            print(f"  - [{alias['section']}] -> {alias['model_path']}")
         print("No ini entries were changed.")
         return 0
     router_ini = Path(config.get('router', 'ini')).expanduser()
-    changed = _rewrite_alias_block(router_ini, alias['section'], enable=enable)
-    print(f"APPLIED: {action}d alias [{alias['section']}] in {router_ini}" + ("" if changed else " (already in requested state)"))
+    changed_count = 0
+    for alias in aliases:
+        if _rewrite_alias_block(router_ini, alias['section'], enable=enable):
+            changed_count += 1
+    if getattr(args, "json", False):
+        _print_json(_json_envelope(action, {"target": args.target, "resolved_target": resolved["resolved_target"], "applied": True, "dry_run": False, "affected_aliases": affected, "changed_count": changed_count, "ini_path": str(router_ini)}))
+        return 0
+    print(f"APPLIED: {action}d {changed_count} alias(es) in {router_ini}" + ("" if changed_count else " (already in requested state)"))
+    for alias in aliases:
+        print(f"  - [{alias['section']}] -> {alias['model_path']}")
     return 0
-
 
 def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     router_ini = Path(config.get("router", "ini")).expanduser()
@@ -1628,9 +1761,8 @@ def _active_restore_path(config: configparser.ConfigParser, archived_path: str, 
 
 def _restore_plan(config: configparser.ConfigParser, config_path: str, target: str) -> dict[str, Any]:
     imported = _import_from_config(config)
-    archived_path = _resolve_model_target(imported, target)
-    if archived_path is None:
-        archived_path = target.split(":", 1)[1] if target.startswith("path:") else target
+    resolved = _resolve_model_result(imported, target, prefer="archived")
+    archived_path = resolved["path"] if resolved.get("ok") else (target.split(":", 1)[1] if target.startswith("path:") else target)
     archived = Path(archived_path).expanduser()
     metadata = _find_archive_metadata(config_path, str(archived))
     active = Path(_active_restore_path(config, str(archived), metadata)).expanduser()
@@ -2042,6 +2174,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--archived", action="store_true", help="Show only archived models")
     list_cmd.add_argument("--enabled", action="store_true", help="Show only enabled aliases")
     list_cmd.add_argument("--disabled", action="store_true", help="Show only disabled aliases")
+    list_cmd.add_argument("target", nargs="?", help="Optional type (models/aliases/servers) or model/alias target")
     show = sub.add_parser(
         "show",
         help="Show details for a model or alias target",
@@ -2094,10 +2227,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_check.add_argument("target", nargs="?", metavar="TARGET", help="Optional model target, e.g. 1 or alias:my-model")
     enable = sub.add_parser("enable", help="Enable an alias in the router ini", description="Enable a disabled alias in the router ini.", epilog=ENABLE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    enable.add_argument("target", metavar="ALIAS", help="Alias target, e.g. a2 or alias:my-model")
+    enable.add_argument("target", metavar="TARGET", help="Alias or model target, e.g. a2, qwen-mini, or model filename/stem")
     enable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
     disable = sub.add_parser("disable", help="Disable an alias in the router ini", description="Disable an alias in the router ini.", epilog=DISABLE_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    disable.add_argument("target", metavar="ALIAS", help="Alias target, e.g. a2 or alias:my-model")
+    disable.add_argument("target", metavar="TARGET", help="Alias or model target, e.g. a2, qwen-mini, or model filename/stem")
     disable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
     add = sub.add_parser("add", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     add.add_argument("--alias", required=True, help="Router alias/section name to create")
