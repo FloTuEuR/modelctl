@@ -31,16 +31,16 @@ Implemented in commit babf09f:
   endpoints, JSON envelope shape, and preservation of existing `monitor router`
   behavior.
 
+Additional completed follow-up:
+- `monitor router` with no configured backend now suggests `modelctl monitor discover` in human output.
+- JSON output for the unconfigured monitor path includes `suggested_commands` and `next_steps`.
+
 Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Consider whether `monitor router` with no configured backend should suggest
-  running `monitor discover` in its human output.
 
 Acceptance criteria for the remaining follow-up:
-- If no endpoint is found, output explains how to provide endpoint/log details or
-  configure monitoring.
 - If process-list discovery is ever added, tests cover none, one, and multiple
   mocked process candidates.
 - Discovery remains read-only.
