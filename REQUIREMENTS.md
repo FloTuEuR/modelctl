@@ -40,18 +40,29 @@ restore, recover, monitor, rules
 - Existing router `.ini` import via `setup` and `import`.
 - Basic operational health checks via `doctor`.
 - Model and alias inspection via `list`, `show`, and `aliases`.
-- Plain numeric target IDs and explicit target forms such as `alias:<name>` and `path:<file>`.
-- List filters for active/archive and enabled/disabled views.
+- Operator-friendly target resolution for common daily-use forms:
+  - numeric model IDs such as `1`;
+  - alias references such as `a1`, `a17`, `alias:a17`, and alias section names;
+  - copied GGUF filenames such as `Llama-3.2-3B-Instruct-UD-Q8_K_XL.gguf`;
+  - GGUF stems without `.gguf`;
+  - relative or absolute paths, including explicit `path:<file>`;
+  - case-insensitive and separator-tolerant matching for hyphen, underscore, dot, and space variants.
+- Safe target-resolution errors: ambiguous targets fail with candidate choices, while missing targets report the filename, stem, path, alias/reference, configured directory, and current-directory forms that were tried.
+- `list` supports operator scopes: default all-up view, `list model(s)`, `list alias(es)`, `list server(s)`, and target-specific alias lookup for a model or alias.
+- `list` filters support active/archive and enabled/disabled views, including rejecting incompatible `--enabled` plus `--disabled` requests.
+- `show` resolves both model and alias targets and includes alias enabled/state metadata in human-readable and supported structured output.
 - Add/enable/disable operations that preserve unrelated `.ini` content.
-- Archive operation with aliases preserved by default and optional alias disabling.
-- Restore operation for archived model files with conflict-aware behaviour.
+- `enable` and `disable` accept either alias targets or model targets; alias targets change one alias, while model targets change all aliases pointing at that model.
+- Archive operation with aliases preserved by default and optional alias disabling; archive targets accept GGUF filenames, stems, relative/absolute paths, and explicit path/model forms.
+- Restore operation for archived model files with conflict-aware behaviour; restore targets accept archived GGUF filenames, stems, paths, and explicit path/model forms.
 - Delete dry-run impact preview and guarded destructive delete with focused recovery manifest generation.
 - Recover operation from delete recovery manifests.
-- Stable JSON output envelope for supported automation paths.
+- Stable JSON output envelope for supported automation paths, with deterministic compatibility for existing `list --json` and `show --json` schemas.
 - Storage hygiene for modelctl-owned config/data/state/cache/recovery/benchmark locations.
 - Real `llama-bench` invocation path for `benchmark` when the binary is available, with persisted result display in `show`.
 - Hugging Face freshness/update state persistence when source metadata is known.
 - Read-only `monitor discover` for configured/common local OpenAI-compatible endpoints.
+- Read-only `list server(s)` endpoint discovery that reports reachable OpenAI-compatible endpoints without mutating service or config state.
 - File-backed `monitor router` log reading.
 - Clear monitor guidance when no monitor backend is configured, including `modelctl monitor discover` as the suggested next command.
 - Documentation for safety, JSON output, lifecycle operations, settings rules, release readiness, roadmap, and backlog.
@@ -128,4 +139,4 @@ python3 -m py_compile modelctl.py modelctl_core.py
 python3 -m unittest discover -s tests -v
 ```
 
-Latest verified result on 2026-06-22: 108 tests passed, 1 skipped.
+Latest verified result on 2026-06-22: 107 tests passed, 1 skipped, 18 subtests passed.
