@@ -1944,7 +1944,15 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
         return finish(2)
     if backend == "none":
         payload["status"] = "unconfigured"
-        payload["error"] = "monitor backend is not configured; set [monitor] backend=file/systemd/container/command"
+        payload["suggested_commands"] = ["modelctl monitor discover"]
+        payload["next_steps"] = [
+            "Run modelctl monitor discover to probe common local endpoints without changing files.",
+            "Configure [monitor] backend=file with log_file, or provide endpoint/log details in the config.",
+        ]
+        payload["error"] = (
+            "monitor backend is not configured; run modelctl monitor discover "
+            "or set [monitor] backend=file with log_file / endpoint details"
+        )
         return finish(2)
     if backend == "file":
         log_file = config.get("monitor", "log_file", fallback="").strip()

@@ -83,6 +83,26 @@ class StorageMonitorTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("monitor backend is not configured", result.stderr)
+            self.assertIn("modelctl monitor discover", result.stderr)
+            self.assertEqual(router_ini.read_text(encoding="utf-8"), before)
+            self.assertEqual(sorted(root.glob("*")), sorted(root.glob("*")))
+
+    def test_monitor_none_backend_json_includes_discovery_guidance(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, router_ini, config, _doomed = self.make_fixture(td)
+            before = router_ini.read_text(encoding="utf-8")
+
+            result = self.run_modelctl("--config", str(config), "monitor", "router", "--json")
+
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "error")
+            self.assertEqual(payload["command"], "monitor")
+            self.assertEqual(payload["error"]["code"], "monitor_failed")
+            data = payload["data"]
+            self.assertEqual(data["status"], "unconfigured")
+            self.assertIn("modelctl monitor discover", data["suggested_commands"])
+            self.assertTrue(any("endpoint/log details" in step for step in data["next_steps"]))
             self.assertEqual(router_ini.read_text(encoding="utf-8"), before)
             self.assertEqual(sorted(root.glob("*")), sorted(root.glob("*")))
 
