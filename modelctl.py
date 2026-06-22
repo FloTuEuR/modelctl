@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import os
-import re as regex
+import re
 import shutil
 import subprocess
 import sys
@@ -600,15 +600,15 @@ def _normalize_name(name: str) -> str:
     if name.startswith("./"):
         name = name[2:]
     # Normalize separators first (case-insensitive, hyphen/underscore/dot/space equivalent)
-    name = regex.sub(r"[\s_.]+", "-", name.lower())
+    name = re.sub(r"[\s_.]+", "-", name.lower())
     # Strip known suffixes: .gguf, -gguf, -hyphen, -underscore
-    name = regex.sub(r"[-_]?gguf$", "", name)
-    name = regex.sub(r"[-_]?hyphen$", "", name)
-    name = regex.sub(r"[-_]?underscore$", "", name)
+    name = re.sub(r"[-_]?gguf$", "", name)
+    name = re.sub(r"[-_]?hyphen$", "", name)
+    name = re.sub(r"[-_]?underscore$", "", name)
     return name
 
 
-def _resolve_model_target(imported: dict[str, Any], target: str) -> tuple[str | None, list[str] | None]:
+def _resolve_model_target_with_candidates(imported: dict[str, Any], target: str) -> tuple[str | None, list[str] | None]:
     """Resolve a model target to a path, returning (path, ambiguous_candidates).
 
     Resolution order:
@@ -635,7 +635,7 @@ def _resolve_model_target(imported: dict[str, Any], target: str) -> tuple[str | 
     # Check for model: prefix
     if target.startswith("model:"):
         ref = target.split(":", 1)[1]
-        return _resolve_model_target_by_ref(imported, ref, ambiguous_candidates), ambiguous_candidates
+        return _resolve_model_target_by_ref(imported, ref, ambiguous_candidates)
 
     # Check for numeric model ID
     if target.isdigit():
@@ -660,15 +660,15 @@ def _resolve_model_target(imported: dict[str, Any], target: str) -> tuple[str | 
 
     # Try matching targets with suffixes to files without suffixes
     # e.g., "Llama-3.2-3B-Instruct-UD-Q8_K_XL-hyphen" matches "Llama-3.2-3B-Instruct-UD-Q8_K_XL"
-    target_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", target_for_match)
+    target_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", target_for_match)
     # Normalize separators (dots, underscores, spaces all to hyphens) for comparison
     target_stripped = target_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
     matches: list[str] = []
     for model in imported.get("models", []):
         model_path = Path(model["path"])
         # Also strip suffix from model name for comparison
-        model_stem_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.stem)
-        model_name_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.name)
+        model_stem_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.stem)
+        model_name_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", model_path.name)
         # Normalize separators in model names for comparison
         model_stem_stripped = model_stem_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
         model_name_stripped = model_name_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
@@ -703,6 +703,12 @@ def _resolve_model_target(imported: dict[str, Any], target: str) -> tuple[str | 
     return None, None
 
 
+def _resolve_model_target(imported: dict[str, Any], target: str) -> str | None:
+    """Resolve a model target to a path, preserving the legacy string/None API."""
+    model_path, _candidates = _resolve_model_target_with_candidates(imported, target)
+    return model_path
+
+
 def _resolve_model_target_by_ref(imported: dict[str, Any], ref: str, ambiguous_candidates: list[str] | None = None) -> tuple[str | None, list[str] | None]:
     """Resolve a model by ref (path, name, or normalized).
 
@@ -725,15 +731,15 @@ def _resolve_model_target_by_ref(imported: dict[str, Any], ref: str, ambiguous_c
             return model["path"], None
 
     # Try matching refs with suffixes to files without suffixes
-    ref_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", ref_for_match)
+    ref_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", ref_for_match)
     # Normalize separators (dots, underscores, spaces all to hyphens) for comparison
     ref_stripped = ref_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
     matches: list[str] = []
     for model in imported.get("models", []):
         path = Path(model["path"])
         # Also strip suffix from model name for comparison
-        model_stem_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.stem)
-        model_name_stripped = regex.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.name)
+        model_stem_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.stem)
+        model_name_stripped = re.sub(r"[-_]+(?:hyphen|underscore|space|dot|q8_k_xl)$", "", path.name)
         # Normalize separators in model names for comparison
         model_stem_stripped = model_stem_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
         model_name_stripped = model_name_stripped.replace(".", "-").replace("_", "-").replace(" ", "-")
@@ -1220,7 +1226,7 @@ def _archive_targets(args: argparse.Namespace, imported: dict[str, Any]) -> list
         return None
     targets: list[str] = []
     for target in args.target:
-        result = _resolve_model_target(imported, target)
+        result = _resolve_model_target_with_candidates(imported, target)
         model_path = result[0] if result else None
         if model_path is None:
             alias = _resolve_alias_target(imported, target)
