@@ -146,6 +146,20 @@ class StorageMonitorTests(unittest.TestCase):
             self.assertEqual(data["status"], "ok")
             self.assertEqual(data["lines"], ["beta"])
 
+    def test_monitor_help_is_plain_english_and_example_driven(self):
+        result = self.run_modelctl("monitor", "-h")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Examples:", result.stdout)
+        self.assertIn("modelctl monitor 8080", result.stdout)
+        self.assertIn("modelctl monitor 8082", result.stdout)
+        self.assertIn("modelctl tail 8080", result.stdout)
+        self.assertIn("ports identify local llama servers", result.stdout)
+        self.assertNotIn("monitor set", result.stdout)
+        self.assertNotIn("router log abstraction", result.stdout)
+        self.assertNotIn("configured read-only commands", result.stdout)
+        self.assertNotIn("design backends", result.stdout)
+
 
 class _ModelsHandler:
     def __init__(self, model_ids):
@@ -222,6 +236,8 @@ class MonitorDiscoveryTests(StorageMonitorTests):
             self.assertTrue(candidate["reachable"])
             self.assertEqual(candidate["models_endpoint"], f"{endpoint}/models")
             self.assertEqual(candidate["model_ids"], ["alpha", "beta"])
+            self.assertEqual(candidate["available_model_count"], 2)
+            self.assertEqual(candidate["current_model"], "unknown")
             self.assertEqual(candidate["source"], "configured")
             self.assertIn("/v1/models", handler.requests)
 
@@ -236,11 +252,37 @@ class MonitorDiscoveryTests(StorageMonitorTests):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("Monitor discovery (read-only)", result.stdout)
             self.assertIn("found count: 2", result.stdout)
-            self.assertIn("multiple servers found", result.stdout)
             self.assertIn(endpoint1, result.stdout)
             self.assertIn(endpoint2, result.stdout)
-            self.assertIn("model ids: alpha", result.stdout)
-            self.assertIn("model ids: beta", result.stdout)
+            self.assertIn("available models: 1", result.stdout)
+            self.assertIn("current model: alpha", result.stdout)
+            self.assertIn("current model: beta", result.stdout)
+            self.assertNotIn("model ids: alpha", result.stdout)
+            self.assertNotIn("model ids: beta", result.stdout)
+
+    def test_monitor_discover_human_shows_unknown_current_model_for_multi_model_router(self):
+        endpoint, _handler = self._server(["alpha", "beta"])
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n[monitor]\nendpoint = {endpoint}\ndiscovery_timeout = 0.2\ndiscover_defaults = false\n")
+            result = self.run_modelctl("--config", str(config), "monitor", "discover")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("current model: unknown", result.stdout)
+            self.assertIn("available models: 2", result.stdout)
+            self.assertNotIn("model ids: alpha", result.stdout)
+
+    def test_monitor_discover_human_shows_single_model_as_current_model(self):
+        endpoint, _handler = self._server(["qwen-mini"])
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n[monitor]\nendpoint = {endpoint}\ndiscovery_timeout = 0.2\ndiscover_defaults = false\n")
+            result = self.run_modelctl("--config", str(config), "monitor", "discover")
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("current model: qwen-mini", result.stdout)
+            self.assertIn("available models: 1", result.stdout)
+            self.assertNotIn("model ids:", result.stdout)
 
     def test_monitor_router_behavior_still_works_after_discovery_addition(self):
         with tempfile.TemporaryDirectory() as td:

@@ -71,7 +71,18 @@ Important defaults:
 
 ## Monitor discovery
 
-`modelctl monitor discover` performs read-only endpoint discovery for local OpenAI-compatible router/server endpoints. See [`docs/phase-6-monitor-discovery.md`](docs/phase-6-monitor-discovery.md).
+Use monitor discovery when you want to find local llama servers quickly:
+
+```bash
+modelctl monitor
+modelctl monitor discover
+modelctl monitor 8080
+modelctl monitor 8082
+modelctl tail 8080
+modelctl restart 8080
+```
+
+`modelctl monitor discover` stays read-only. It reports each discovered server, shows the current model when it can be determined safely, and otherwise reports `current model: unknown`. JSON output keeps the full model ID list for automation. See [`docs/phase-6-monitor-discovery.md`](docs/phase-6-monitor-discovery.md).
 
 ## Roadmap and recommendation rules
 

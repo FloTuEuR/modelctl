@@ -14,8 +14,10 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+
 from pathlib import Path
 from typing import Any
 
@@ -288,11 +290,42 @@ after the model file exists again, preserving unrelated router ini changes.
 Implementation is staged after delete manifest alignment.
 """
 
-MONITOR_HELP = """Read-only router log abstraction.
+MONITOR_HELP = """Check read-only local llama server status or recent logs without changing anything.
 
-Reports or follows configured router logs without restarting, reloading, killing,
-or mutating anything. Supported design backends include systemd, file logs,
-containers, modelctl-managed logs, configured read-only commands, and none.
+ports identify local llama servers. Use `discover` to find them first, then use a
+port such as `8080` or `8082` for a specific server.
+
+Usage:
+  modelctl monitor
+  modelctl monitor discover
+  modelctl monitor 8080
+  modelctl monitor 8082
+
+Examples:
+  modelctl monitor
+    Discover local llama servers and suggest next commands.
+
+  modelctl monitor 8080
+    Show status for the llama server on port 8080.
+
+  modelctl monitor 8082
+    Show status for the mini/helper llama server on port 8082.
+
+  modelctl tail 8080
+    Follow logs for the service mapped to port 8080.
+
+  modelctl restart 8080
+    Restart the service mapped to port 8080.
+
+Options:
+  --json
+    Print machine-readable output.
+
+  --lines N
+    Show N recent log lines when logs are available.
+
+  --follow
+    Follow logs when supported.
 """
 
 
@@ -559,26 +592,20 @@ def _print_aliases_only(aliases: list[dict[str, Any]], imported: dict[str, Any])
 
 
 def _server_discovery_payload(config: configparser.ConfigParser) -> dict[str, Any]:
-    timeout = config.getfloat("monitor", "discovery_timeout", fallback=0.5)
-    candidates = []
-    for candidate in _monitor_discovery_endpoints(config):
-        probed = _query_models_endpoint(candidate["endpoint"], timeout)
-        probed["source"] = candidate["source"]
-        candidates.append(probed)
-    reachable = [candidate for candidate in candidates if candidate["reachable"]]
-    return {"candidates": candidates, "found_count": len(reachable), "selected": reachable[0]["endpoint"] if len(reachable) == 1 else None, "mutated": False}
+    return _monitor_discovery_payload(config)
 
 
 def _print_servers_only(config: configparser.ConfigParser) -> None:
     data = _server_discovery_payload(config)
     print("Servers")
-    print("  read-only discovery; no service mutation performed")
     print(f"  found count: {data['found_count']}")
-    if not data["found_count"]:
+    if not data["candidates"]:
         print("  no server found through configured/default monitor discovery")
+        return
     for candidate in data["candidates"]:
         state = "reachable" if candidate.get("reachable") else "not reachable"
-        print(f"  - {candidate['endpoint']} ({state}, {candidate['source']})")
+        port = candidate.get("port") or "unknown"
+        print(f"  - {port} {state} {candidate['endpoint']}")
 
 
 def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
@@ -1981,6 +2008,33 @@ def _models_endpoint(endpoint: str) -> str:
     return f"{endpoint}/models" if endpoint.endswith("/v1") else f"{endpoint}/v1/models"
 
 
+def _endpoint_port(endpoint: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint)
+    if parsed.port is not None:
+        return str(parsed.port)
+    if parsed.scheme == "https":
+        return "443"
+    if parsed.scheme == "http":
+        return "80"
+    return "unknown"
+
+
+def _summarize_current_model(model_ids: list[str]) -> str:
+    if len(model_ids) == 1:
+        return model_ids[0]
+    return "unknown"
+
+
+def _enrich_monitor_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    model_ids = [str(model_id) for model_id in candidate.get("model_ids", [])]
+    enriched = dict(candidate)
+    enriched["port"] = _endpoint_port(str(candidate.get("endpoint", "")))
+    enriched["service"] = "unknown"
+    enriched["available_model_count"] = len(model_ids)
+    enriched["current_model"] = _summarize_current_model(model_ids)
+    return enriched
+
+
 def _query_models_endpoint(endpoint: str, timeout: float) -> dict[str, Any]:
     models_endpoint = _models_endpoint(endpoint)
     result: dict[str, Any] = {"endpoint": endpoint.rstrip("/"), "reachable": False, "models_endpoint": models_endpoint, "model_ids": [], "error_message": None}
@@ -2001,10 +2055,10 @@ def _query_models_endpoint(endpoint: str, timeout: float) -> dict[str, Any]:
         result["model_ids"] = model_ids
     except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         result["error_message"] = str(exc)
-    return result
+    return _enrich_monitor_candidate(result)
 
 
-def cmd_monitor_discover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+def _monitor_discovery_payload(config: configparser.ConfigParser) -> dict[str, Any]:
     timeout = config.getfloat("monitor", "discovery_timeout", fallback=0.5)
     candidates = []
     for candidate in _monitor_discovery_endpoints(config):
@@ -2012,45 +2066,103 @@ def cmd_monitor_discover(args: argparse.Namespace, config: configparser.ConfigPa
         probed["source"] = candidate["source"]
         candidates.append(probed)
     reachable = [candidate for candidate in candidates if candidate["reachable"]]
-    selected = reachable[0]["endpoint"] if len(reachable) == 1 else None
+    return {"candidates": candidates, "found_count": len(reachable), "selected": reachable[0]["endpoint"] if len(reachable) == 1 else None, "mutated": False}
+
+
+def _print_monitor_candidate(candidate: dict[str, Any]) -> None:
+    port = candidate.get("port") or "unknown"
+    state = "reachable" if candidate.get("reachable") else "not reachable"
+    print(f"{port}  {state}  {candidate['endpoint']}")
+    print(f"service: {candidate.get('service') or 'unknown'}")
+    print(f"current model: {candidate.get('current_model') or 'unknown'}")
+    print(f"available models: {candidate.get('available_model_count', 0)}")
+    if candidate.get("error_message"):
+        print(f"error: {candidate['error_message']}")
+
+
+def _print_monitor_try_commands(candidates: list[dict[str, Any]]) -> None:
+    ports = [candidate.get("port") for candidate in candidates if candidate.get("reachable") and candidate.get("port") not in {None, "", "unknown"}]
+    if not ports:
+        return
+    print()
+    print("Try:")
+    for port in ports:
+        print(f"modelctl monitor {port}")
+    for port in ports:
+        print(f"modelctl tail {port}")
+        print(f"modelctl restart {port}")
+
+
+def cmd_monitor_discover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    data = _monitor_discovery_payload(config)
+    reachable = [candidate for candidate in data["candidates"] if candidate["reachable"]]
     warnings: list[str] = []
     if len(reachable) > 1:
         warnings.append("multiple servers found; explicit selection/configuration is required")
     elif not reachable:
         warnings.append("no server found; provide endpoint or log details")
-    data = {"candidates": candidates, "found_count": len(reachable), "selected": selected, "mutated": False}
     if getattr(args, "json", False):
         _print_json(_json_envelope("monitor discover", data, warnings=warnings))
         return 0
     print("Monitor discovery (read-only)")
-    print("  no mutation performed")
-    print(f"  found count: {len(reachable)}")
-    if selected:
-        print(f"  selected/recommended: {selected}")
-    elif len(reachable) > 1:
-        print("  multiple servers found; explicit selection/configuration is required")
-    else:
-        print("  no server found; provide endpoint or log details")
-    for candidate in candidates:
-        print(f"  - endpoint: {candidate['endpoint']}")
-        print(f"    source: {candidate['source']}")
-        print(f"    reachable: {str(candidate['reachable']).lower()}")
-        print(f"    models endpoint: {candidate['models_endpoint']}")
-        if candidate["model_ids"]:
-            print(f"    model ids: {', '.join(candidate['model_ids'])}")
-        if candidate.get("error_message"):
-            print(f"    error: {candidate['error_message']}")
+    print(f"found count: {len(reachable)}")
+    if not data["candidates"]:
+        print()
+        print("No servers were checked.")
+        return 0
+    if not reachable:
+        print()
+        print("No local llama server responded.")
+    for candidate in data["candidates"]:
+        print()
+        _print_monitor_candidate(candidate)
+    _print_monitor_try_commands(reachable)
     return 0
+
+
+def _monitor_candidate_for_port(config: configparser.ConfigParser, port: str) -> dict[str, Any] | None:
+    data = _monitor_discovery_payload(config)
+    for candidate in data["candidates"]:
+        if str(candidate.get("port")) == str(port):
+            return candidate
+    return None
 
 
 def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     target = getattr(args, "target", "router")
     if target == "discover":
         return cmd_monitor_discover(args, config)
-    backend = config.get("monitor", "backend", fallback="none").strip().lower() or "none"
     lines_requested = max(int(getattr(args, "lines", 80) or 80), 0)
     follow = bool(getattr(args, "follow", False))
     as_json = bool(getattr(args, "json", False))
+    if str(target).isdigit():
+        candidate = _monitor_candidate_for_port(config, str(target))
+        if candidate is None:
+            payload = {
+                "target": target,
+                "mode": "read-only",
+                "status": "not_found",
+                "error": f"no discovered local llama server matches port {target}; run modelctl monitor discover",
+                "suggested_commands": ["modelctl monitor discover"],
+            }
+            if as_json:
+                _print_json(_json_envelope("monitor", payload, status="error", error={"code": "monitor_failed", "message": payload["error"]}))
+            else:
+                print(payload["error"], file=sys.stderr)
+            return 2
+        payload = {"target": target, "mode": "read-only", "status": "ok", "server": candidate, "follow": follow, "lines_requested": lines_requested}
+        if as_json:
+            _print_json(_json_envelope("monitor", payload))
+        else:
+            print("Server monitor")
+            print(f"port: {candidate.get('port')}")
+            print(f"endpoint: {candidate.get('endpoint')}")
+            print(f"reachable: {str(bool(candidate.get('reachable'))).lower()}")
+            print(f"service: {candidate.get('service') or 'unknown'}")
+            print(f"current model: {candidate.get('current_model') or 'unknown'}")
+            print(f"available models: {candidate.get('available_model_count', 0)}")
+        return 0
+    backend = config.get("monitor", "backend", fallback="none").strip().lower() or "none"
     payload: dict[str, Any] = {"target": target, "backend": backend, "follow": follow, "lines_requested": lines_requested, "mode": "read-only"}
     def finish(code: int) -> int:
         if as_json:
@@ -2256,12 +2368,13 @@ def build_parser() -> argparse.ArgumentParser:
     recover.add_argument("manifest", metavar="MANIFEST.json", help="Delete recovery manifest JSON")
     recover.add_argument("--dry-run", action="store_true", help="Preview recovery without changing ini entries")
     recover.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
-    monitor = sub.add_parser("monitor", help="Read-only router log abstraction", description="Inspect configured router logs and discover endpoints without mutating router state.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    monitor.add_argument("target", nargs="?", default="router", choices=["router", "discover"], help="Monitor target; currently: router or discover")
-    monitor.add_argument("--follow", action="store_true", help="Follow logs when the configured backend supports it")
-    monitor.add_argument("--lines", type=int, default=80, help="Number of recent log lines to show when supported")
-    monitor.add_argument("--json", action="store_true", help="Emit JSON monitor metadata and log lines")
+    monitor = sub.add_parser("monitor", help="Check local llama server status or recent logs", description="Check read-only local llama server status or recent logs without changing anything.", epilog=MONITOR_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    monitor.add_argument("target", nargs="?", default="router", metavar="TARGET", help="`discover`, `router`, or a local llama server port such as 8080")
+    monitor.add_argument("--follow", action="store_true", help="Follow logs when supported")
+    monitor.add_argument("--lines", type=int, default=80, help="Show N recent log lines when logs are available")
+    monitor.add_argument("--json", action="store_true", help="Print machine-readable output")
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+
     return parser
 
 
