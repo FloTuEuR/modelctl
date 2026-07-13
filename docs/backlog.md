@@ -35,25 +35,29 @@ Additional completed follow-up:
 - `monitor router` with no configured backend now suggests `modelctl monitor discover` in human output.
 - JSON output for the unconfigured monitor path includes `suggested_commands` and `next_steps`.
 
+Completed in Loop 6:
+- `[monitor] backend = file` can show recent configured log lines.
+- `modelctl monitor router --follow` streams appended lines from the configured
+  file backend without mutating router/server/config state.
+- `--json --follow` fails clearly because JSON output is snapshot-oriented.
+
 Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Next loop: add one configured monitoring backend that satisfies Phase 5 of
-  `docs/roadmap.md` and the monitoring acceptance criteria in
-  `docs/requirements.md`.
-- Preferred next slice: wire a configured backend for real recent-log and
-  follow-log output, keep it read-only, report the backend in human and JSON
-  output, and add targeted tests before broader validation.
+- Next loop: add a narrow `systemd`/journalctl-style backend for configured
+  service logs, aimed at output similar to `journalctl -u llama-cuda.service -f`
+  while staying read-only and explicit.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
   mocked process candidates.
 - Discovery remains read-only.
-- The next monitoring-backend slice shows which backend is in use.
-- The next monitoring-backend slice can show recent logs.
-- The next monitoring-backend slice can follow logs where the configured
-  backend supports it.
+- File backend shows which backend is in use.
+- File backend can show recent logs.
+- File backend can follow appended log lines.
+- Next backend slice should cover explicit configured service logs without broad
+  process scanning.
 
 ---
 

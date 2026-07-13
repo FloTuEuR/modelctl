@@ -1,57 +1,63 @@
 # Current work loop
 
 Objective:
-Track the next monitor feature increment in a committed, resumable workloop so any agent can continue from GitHub.
+Keep monitor work moving through small, committed, resumable loops with GitHub as source of truth.
 
-Current bounded increment:
-Implement the first configured monitoring-backend slice for Phase 5 router setup and monitoring, following the monitor discovery UX work already landed.
+Completed loop:
+Loop 6 — configured file-backend follow logs.
 
-Files in scope:
-- docs/backlog.md
-- .agent/WORKLOOP.md
+Loop 6 scope:
+- Add the first real configured monitor backend behavior after monitor discovery UX.
+- Keep behavior read-only.
+- Report backend details.
+- Show recent configured log lines.
+- Follow appended log lines for the configured file backend.
+
+Files changed in Loop 6:
 - modelctl.py
 - tests/test_storage_monitor.py
+- docs/backlog.md
 - docs/phase-6-monitor-discovery.md
 - README.md
+- .agent/WORKLOOP.md
 
-Files out of scope:
+Out of scope for Loop 6:
+- broad process scanning
+- service-name guessing
+- router start/stop/restart behavior
 - archive / restore / delete / recover flows
 - benchmark / recommend flows
-- broad process scanning
-- router start/spawn feature expansion
-- unrelated GPU knowledge-base proposals
+- GPU/model-management changes
 
-Baseline command and result:
-- `python3 -m unittest tests.test_storage_monitor -v`
-- Current expected baseline before the next slice: existing monitor discovery tests pass and no configured-backend follow-log path is implemented yet.
+Decision:
+The narrowest coherent backend was `[monitor] backend = file` with `log_file = ...`.
+`modelctl monitor router --follow` now prints the current tail and streams appended lines from that file until interrupted. `--json --follow` fails clearly because JSON output is a snapshot envelope, not a stream.
 
-Hypothesis:
-The next coherent monitor increment belongs under Phase 5 in `docs/roadmap.md` and should satisfy the monitoring acceptance criteria in `docs/requirements.md` by adding one real configured backend that can report the backend name, show recent logs, and follow logs without mutating router or server state.
+Validation run for Loop 6:
+- `python -m py_compile modelctl.py tests/test_storage_monitor.py`
+- `python -m unittest tests.test_storage_monitor -v`
 
-Change made:
-- Documented the next monitoring slice in `docs/backlog.md`.
-- Created this tracked workloop file so the next agent can resume from GitHub.
+Next loop:
+Loop 7 — explicit systemd/journalctl-style monitor backend.
 
-Validation command and result:
-- Pending for the next implementation slice.
+Loop 7 recommended slice:
+1. Add config-driven service log monitoring only; do not scan all processes.
+2. Support a clear config shape such as:
+   - `[monitor] backend = systemd`
+   - `service = llama-cuda.service`
+3. Make `modelctl monitor router --follow` produce behavior similar to:
+   - `journalctl -u llama-cuda.service -f`
+4. Keep it read-only.
+5. Add tests that mock the subprocess call rather than requiring systemd in CI.
+6. Preserve the existing file-backend behavior and JSON snapshot behavior.
 
-Diff review:
-- This loop adds planning/tracking only; no runtime behavior changed yet.
-
-Current decision:
-Next implementation should extend `monitor` with one configured backend and targeted tests before any broader monitor expansion.
-
-Next step:
-1. Re-read `docs/roadmap.md` Phase 5 and `docs/requirements.md` monitoring acceptance criteria.
-2. Choose one backend already partially modeled in code (`file` is the narrowest path).
-3. Add targeted tests for backend reporting, recent logs, and `--follow` behavior.
-4. Implement the smallest coherent backend behavior.
-5. Run targeted monitor tests, then broader validation.
+Loop 7 acceptance criteria:
+- systemd backend reports the configured service name.
+- non-follow mode shows recent journal lines.
+- follow mode delegates to an explicit `journalctl -u <service> -f`-style command.
+- missing `service` fails clearly.
+- unsupported JSON follow behavior is clear and tested.
+- no broad service/process discovery is added.
 
 Blocker:
-None for planning. Backend choice and exact follow semantics must stay narrow and read-only.
-
-Completion criteria:
-- Next loop is committed and visible in GitHub.
-- The next agent can identify where monitor work belongs from the roadmap, requirements, backlog, and this workloop.
-- A future implementation slice will not need to rediscover where monitor backend work fits.
+None for Loop 7 planning. The implementation should stay narrow and configured-only.

@@ -80,6 +80,29 @@ modelctl tail 8082
 modelctl restart 8082
 ```
 
+
+## Configured file backend
+
+For a known local log file, configure:
+
+```ini
+[monitor]
+backend = file
+log_file = /path/to/router.log
+```
+
+Then use:
+
+```bash
+modelctl monitor router --lines 50
+modelctl monitor router --follow
+```
+
+The file backend is read-only. `--follow` prints the current tail, then streams
+new lines appended to the configured file until interrupted. JSON output remains
+for snapshots only; `--json --follow` fails clearly instead of producing an
+ambiguous streaming envelope.
+
 ## JSON output
 
 `--json` uses the standard modelctl envelope. Each candidate keeps the full

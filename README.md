@@ -82,7 +82,7 @@ modelctl tail 8080
 modelctl restart 8080
 ```
 
-`modelctl monitor discover` stays read-only. It reports each discovered server, shows the current model when it can be determined safely, and otherwise reports `current model: unknown`. JSON output keeps the full model ID list for automation. See [`docs/phase-6-monitor-discovery.md`](docs/phase-6-monitor-discovery.md).
+`modelctl monitor discover` stays read-only. It reports each discovered server, shows the current model when it can be determined safely, and otherwise reports `current model: unknown`. JSON output keeps the full model ID list for automation. With `[monitor] backend = file` and `log_file = ...`, `modelctl monitor router --follow` prints the current tail and streams appended log lines without mutating router/server state. See [`docs/phase-6-monitor-discovery.md`](docs/phase-6-monitor-discovery.md).
 
 ## Roadmap and recommendation rules
 

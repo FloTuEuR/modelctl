@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,7 +35,7 @@ from modelctl_core import (
     plan_archive_models,
     plan_delete_model,
 )
-import json
+
 
 
 DEFAULT_CONFIG = Path.home() / ".config" / "modelctl" / "config.ini"
@@ -2172,6 +2174,7 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     backend = config.get("monitor", "backend", fallback="none").strip().lower() or "none"
     payload: dict[str, Any] = {"target": target, "backend": backend, "follow": follow, "lines_requested": lines_requested, "mode": "read-only"}
     def finish(code: int) -> int:
+        flush = bool(payload.get("follow"))
         if as_json:
             error = None
             if code != 0:
@@ -2179,17 +2182,18 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
             _print_json(_json_envelope("monitor", payload, status="ok" if code == 0 else "error", error=error))
         else:
             if code == 0:
-                print("Router monitor")
-                print("  mode: read-only")
-                print(f"  target: {payload.get('target')}")
-                print(f"  backend: {payload.get('backend')}")
+                print("Router monitor", flush=flush)
+                print("  mode: read-only", flush=flush)
+                print(f"  target: {payload.get('target')}", flush=flush)
+                print(f"  backend: {payload.get('backend')}", flush=flush)
                 if payload.get("log_file"):
-                    print(f"  log file: {payload['log_file']}")
+                    print(f"  log file: {payload['log_file']}", flush=flush)
                 for line in payload.get("lines", []):
-                    print(line)
+                    print(line, flush=flush)
             else:
-                print(str(payload.get("error") or "monitor failed"), file=sys.stderr)
+                print(str(payload.get("error") or "monitor failed"), file=sys.stderr, flush=True)
         return code
+
     if target != "router":
         payload["error"] = f"unsupported monitor target: {target}"
         return finish(2)
@@ -2225,7 +2229,24 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
             return finish(1)
         payload["status"] = "ok"
         payload["lines"] = lines[-lines_requested:] if lines_requested else []
-        return finish(0)
+        if follow and as_json:
+            payload["status"] = "unsupported"
+            payload["error"] = "--json cannot be combined with --follow for monitor backend=file"
+            return finish(2)
+        if not follow:
+            return finish(0)
+        finish(0)
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(0, os.SEEK_END)
+                while True:
+                    line = fh.readline()
+                    if line:
+                        print(line.rstrip("\n"), flush=True)
+                    else:
+                        time.sleep(0.2)
+        except KeyboardInterrupt:
+            return 130
     if backend in {"systemd", "container", "docker", "command", "modelctl"}:
         payload["status"] = "not_implemented"
         payload["error"] = f"monitor backend '{backend}' is recognized but not implemented yet"

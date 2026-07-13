@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -145,6 +146,55 @@ class StorageMonitorTests(unittest.TestCase):
             self.assertEqual(data["lines_requested"], 1)
             self.assertEqual(data["status"], "ok")
             self.assertEqual(data["lines"], ["beta"])
+
+    def test_monitor_file_backend_follow_streams_appended_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, router_ini, config, _doomed = self.make_fixture(td)
+            before = router_ini.read_text(encoding="utf-8")
+            log_file = Path(td) / "router.log"
+            log_file.write_text("boot\nready\n", encoding="utf-8")
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n[monitor]\nbackend = file\nlog_file = {log_file}\n")
+
+            proc = subprocess.Popen(
+                [sys.executable, str(SCRIPT), "--config", str(config), "monitor", "router", "--lines", "1", "--follow"],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                time.sleep(0.7)
+                with log_file.open("a", encoding="utf-8") as fh:
+                    fh.write("served next token\n")
+                time.sleep(0.7)
+                proc.terminate()
+                stdout, stderr = proc.communicate(timeout=5)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    stdout, stderr = proc.communicate(timeout=5)
+
+            self.assertIn("backend: file", stdout)
+            self.assertIn("ready", stdout)
+            self.assertIn("served next token", stdout)
+            self.assertNotIn("Traceback", stdout + stderr)
+            self.assertEqual(router_ini.read_text(encoding="utf-8"), before)
+
+    def test_monitor_file_backend_json_follow_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            log_file = Path(td) / "router.log"
+            log_file.write_text("alpha\n", encoding="utf-8")
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n[monitor]\nbackend = file\nlog_file = {log_file}\n")
+
+            result = self.run_modelctl("--config", str(config), "monitor", "router", "--follow", "--json")
+
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("--json cannot be combined with --follow", payload["error"]["message"])
 
     def test_monitor_help_is_plain_english_and_example_driven(self):
         result = self.run_modelctl("monitor", "-h")
