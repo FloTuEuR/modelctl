@@ -126,5 +126,38 @@ ctx-size = 8192
             self.assertIn("modelctl setup", combined)
 
 
+    def test_missing_router_ini_for_importing_commands_is_actionable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            missing_router_ini = root / "missing-router.ini"
+            config = root / "modelctl.ini"
+            registry = root / "modelctl.yaml"
+            config.write_text(
+                f"""
+[router]
+ini = {missing_router_ini}
+
+[state]
+registry = {registry}
+
+[models]
+download_dir = {root / "models"}
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            for command in ("list", "show", "aliases"):
+                args = ["--config", str(config), command]
+                if command in {"show", "aliases"}:
+                    args.append("1")
+                with self.subTest(command=command):
+                    result = self.run_modelctl(*args)
+                    self.assertNotEqual(result.returncode, 0)
+                    combined = result.stderr + result.stdout
+                    self.assertNotIn("Traceback", combined)
+                    self.assertIn(str(missing_router_ini), combined)
+                    self.assertIn("modelctl setup", combined)
+
+
 if __name__ == "__main__":
     unittest.main()

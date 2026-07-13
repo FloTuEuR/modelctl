@@ -39,11 +39,21 @@ Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
+- Next loop: add one configured monitoring backend that satisfies Phase 5 of
+  `docs/roadmap.md` and the monitoring acceptance criteria in
+  `docs/requirements.md`.
+- Preferred next slice: wire a configured backend for real recent-log and
+  follow-log output, keep it read-only, report the backend in human and JSON
+  output, and add targeted tests before broader validation.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
   mocked process candidates.
 - Discovery remains read-only.
+- The next monitoring-backend slice shows which backend is in use.
+- The next monitoring-backend slice can show recent logs.
+- The next monitoring-backend slice can follow logs where the configured
+  backend supports it.
 
 ---
 

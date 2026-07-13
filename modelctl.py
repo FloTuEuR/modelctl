@@ -445,7 +445,14 @@ def _split_config_paths(value: str | None) -> list[str]:
 
 
 def _import_from_config(config: configparser.ConfigParser) -> dict[str, Any]:
-    imported = detect_from_ini(config.get("router", "ini"))
+    router_ini = Path(config.get("router", "ini")).expanduser()
+    if not router_ini.exists():
+        raise SystemExit(
+            f"router ini not found: {router_ini}\n"
+            "Run: modelctl setup /path/to/models.ini\n"
+            "Or import a valid router ini after fixing the configured path."
+        )
+    imported = detect_from_ini(router_ini)
     download_dir = config.get("models", "download_dir", fallback=imported.get("download_dir"))
     model_dirs = [download_dir] if download_dir else []
     archive_dirs = _split_config_paths(config.get("models", "archive_dirs", fallback=""))
