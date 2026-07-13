@@ -7,6 +7,7 @@ Completed loops:
 - Loop 6 — configured file-backend follow logs.
 - Loop 7 — explicit systemd/journalctl-style monitor backend.
 - Loop 8 — port-centric `tail` example reconciled with real configured behavior.
+- Loop 9 — unsupported restart examples removed from monitor/read-only guidance.
 
 Loop 6 result:
 `[monitor] backend = file` with `log_file = ...` can show recent lines and `modelctl monitor router --follow` streams appended lines until interrupted.
@@ -16,6 +17,9 @@ Loop 7 result:
 
 Loop 8 result:
 `modelctl tail 8080` is real when `[monitor.ports] 8080 = llama-cuda.service` is configured. It is read-only and reuses the systemd follow path.
+
+Loop 9 result:
+Monitor/discovery help no longer suggests unsupported `modelctl restart 8080`; restart is explicitly outside monitor's read-only scope.
 
 Files changed across these loops:
 - modelctl.py
@@ -42,20 +46,19 @@ Validation run:
 - `git diff --check`
 
 Next loop:
-Loop 9 — reconcile restart examples with product safety rules.
+Loop 10 — polish tail mapping docs/setup guidance.
 
-Loop 9 recommended slice:
-1. Inspect every `restart 8080` mention in README/help/docs/tests.
-2. Decide whether to remove it from monitor examples or introduce a separate explicitly configured guarded command outside monitor.
-3. Keep monitor read-only.
-4. If adding any restart behavior, require explicit config, dry-run/confirmation safeguards, and targeted tests before implementation.
-5. Prefer documentation/help correction if restart is not part of the current product slice.
+Loop 10 recommended slice:
+1. Inspect setup/doctor output for where `[monitor.ports]` guidance belongs.
+2. Add only concise guidance/examples; do not auto-detect or write service mappings.
+3. Keep monitor/tail read-only.
+4. Add tests for any generated/help text changes.
 
-Loop 9 acceptance criteria:
-- monitor help no longer implies monitor commands restart services
-- any remaining restart mention is clearly operator context or backed by implemented guarded behavior
-- no broad service/process discovery is added
+Loop 10 acceptance criteria:
+- users can discover the explicit `[monitor.ports]` mapping without reading source
+- no config is mutated unless setup already writes user-requested config
+- all examples point to implemented behavior
 - all changes are committed and pushed
 
 Blocker:
-None for Loop 9 planning. The safest likely slice is help/docs correction, not service mutation.
+None for Loop 10 planning. Stay documentation/help focused unless a tiny tested code path is needed.

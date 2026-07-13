@@ -53,13 +53,17 @@ Completed in Loop 8:
   mapping instead of being a stale help-only example.
 - Tail remains read-only and reuses the configured systemd backend behavior.
 
+Completed in Loop 9:
+- Removed unsupported `modelctl restart 8080` from monitor/read-only examples.
+- Discovery now says restart is not a monitor command instead of suggesting an
+  unimplemented modelctl restart path.
+
 Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Next loop: decide whether `modelctl restart 8080` should stay operator-context
-  help only, be removed from monitor help, or become an explicitly configured
-  guarded command in a separate non-monitor safety flow.
+- Next loop: polish JSON/help consistency for tail mappings and consider a
+  config example in generated setup docs.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
@@ -71,7 +75,8 @@ Acceptance criteria for the remaining follow-up:
 - Systemd backend covers explicit configured service logs without broad process
   scanning.
 - Tail examples are reconciled with real explicit mapping behavior.
-- Next slice should reconcile `restart` help/examples with product safety rules.
+- Restart examples are reconciled with monitor read-only safety rules.
+- Next slice should polish tail mapping docs/setup guidance if needed.
 
 ---
 

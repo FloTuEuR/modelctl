@@ -316,8 +316,7 @@ Examples:
   modelctl tail 8080
     Follow logs for the service explicitly mapped to port 8080.
 
-  modelctl restart 8080
-    Restart examples are shown for operator context only; monitor commands never restart services.
+  # Restart is intentionally not a monitor example; monitor and tail are read-only.
 
 Options:
   --json
@@ -2111,7 +2110,7 @@ def _print_monitor_try_commands(candidates: list[dict[str, Any]]) -> None:
         print(f"modelctl monitor {port}")
     for port in ports:
         print(f"modelctl tail {port}")
-        print(f"modelctl restart {port}")
+    print("Restart is not a monitor command; use explicit service tooling with care.")
 
 
 def cmd_monitor_discover(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
