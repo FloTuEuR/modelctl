@@ -62,8 +62,8 @@ Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Next loop: polish JSON/help consistency for tail mappings and consider a
-  config example in generated setup docs.
+- Tail mapping setup/doctor guidance is complete; next loop should leave the
+  monitor slice and start read-only router status/command support.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
@@ -76,7 +76,7 @@ Acceptance criteria for the remaining follow-up:
   scanning.
 - Tail examples are reconciled with real explicit mapping behavior.
 - Restart examples are reconciled with monitor read-only safety rules.
-- Next slice should polish tail mapping docs/setup guidance if needed.
+- Next slice should implement read-only `router status` / `router command` before any reload/restart action.
 
 ---
 

@@ -51,18 +51,21 @@ Validation run:
 - `git diff --check`
 
 Next loop:
-Loop 11 — decide whether monitor/tail needs a tiny operator polish pass or stop the monitor slice.
+Loop 11 — read-only router status/command surface.
 
 Loop 11 recommended slice:
-1. Inspect README/docs/backlog for any remaining monitor/tail example drift.
-2. If all examples are implemented and tested, mark the monitor/tail slice complete and queue the next roadmap item.
-3. Do not add router lifecycle commands from monitor/tail; keep restart/start/reload out of this slice.
-4. Keep any code change tiny and test-first.
+1. Implement the smallest first-class `router` parser surface for read-only commands only: `modelctl router status` and `modelctl router command`.
+2. `router status` should report configured router ini, endpoint/monitor metadata if present, and fail clearly when status cannot be determined; it must not restart/reload/kill anything.
+3. `router command` should show configured launch guidance from modelctl-owned metadata where available; if metadata is missing, fail clearly and point to setup/doctor guidance.
+4. Do not implement `router reload`, `router restart`, service guessing, process guessing, or broad discovery in this loop.
+5. Add focused tests and update docs/backlog/requirements so files remain the source of truth.
 
 Loop 11 acceptance criteria:
-- no docs suggest unsupported monitor/tail behavior
-- next roadmap slice is explicit and bounded
+- `modelctl router status` and `modelctl router command` are discoverable in help
+- both commands are read-only and backend/config driven
+- unsupported/missing metadata fails clearly with actionable guidance
+- no parser/help surface advertises implemented reload/restart behavior yet
 - GitHub/local/remote checkout are synced after commit/push
 
 Blocker:
-None for Loop 11 planning. Avoid broad service-management work unless the next roadmap explicitly chooses it.
+None for Loop 11 planning. Keep router management separate from monitor/tail and implement read-only status/command before any reload/restart work.

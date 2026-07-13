@@ -30,7 +30,7 @@ The current CLI exposes:
 ```text
 setup, import, doctor, list, show, aliases, delete, archive,
 update-check, enable, disable, add, add-entry, benchmark, scan,
-restore, recover, monitor, rules
+restore, recover, monitor, tail, rules
 ```
 
 `add-entry` is retained only as a deprecated compatibility alias for `add`.
@@ -63,8 +63,11 @@ restore, recover, monitor, rules
 - Hugging Face freshness/update state persistence when source metadata is known.
 - Read-only `monitor discover` for configured/common local OpenAI-compatible endpoints.
 - Read-only `list server(s)` endpoint discovery that reports reachable OpenAI-compatible endpoints without mutating service or config state.
-- File-backed `monitor router` log reading.
+- File-backed `monitor router` log reading, including `--follow` for configured log files.
+- Systemd-backed `monitor router` log reading, including `--follow` through an explicit configured service.
+- Port-centric `tail` for explicitly configured `[monitor.ports]` service mappings.
 - Clear monitor guidance when no monitor backend is configured, including `modelctl monitor discover` as the suggested next command.
+- Setup/doctor guidance for explicit tail mappings without guessing service names.
 - Documentation for safety, JSON output, lifecycle operations, settings rules, release readiness, roadmap, and backlog.
 
 ## Features still to build
@@ -78,15 +81,15 @@ restore, recover, monitor, rules
 
 ### Router management
 
-- Add first-class `router status` / `router command` support.
-- Add configured `router reload` and `router restart` actions where safe and explicitly requested.
+- Add first-class read-only `router status` / `router command` support first.
+- Add configured `router reload` and `router restart` actions later, only where safe and explicitly requested.
 - Keep router actions backend-driven rather than guessing service names or process IDs.
 
 ### Monitoring
 
-- Implement additional monitor backends beyond current file/discovery support: systemd, container/docker, process/modelctl-managed logs, and safe configured command backend.
+- Implement additional monitor backends beyond current file/systemd/discovery support: container/docker, process/modelctl-managed logs, and safe configured command backend.
 - Decide whether read-only process-list discovery is worth adding; if added, it must avoid guessing persistent configuration.
-- Add support for richer monitor options such as `--follow` and `--since` where the backend supports them.
+- Add support for richer monitor options such as `--since` where the backend supports it.
 
 ### Benchmarking and recommendations
 
@@ -126,9 +129,9 @@ restore, recover, monitor, rules
 
 See [`docs/backlog.md`](docs/backlog.md). As of this update:
 
-- Completed: missing-target help UX, list filters, monitor unconfigured guidance.
-- Partially complete: monitor discovery; only optional process-list discovery remains undecided.
-- Next high-value slices: setup/router launch guidance, router status/command, richer monitor backends, and recommendation/classification pipeline.
+- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, and setup/doctor tail guidance.
+- Partially complete: monitor discovery; only optional process-list discovery and non-file/non-systemd backends remain undecided.
+- Next high-value slice: read-only router status/command from configured metadata. Defer reload/restart until status/command is proven.
 
 ## Verification baseline
 
