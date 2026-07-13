@@ -558,6 +558,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print("Next:")
     print("  modelctl doctor")
     print("  modelctl list")
+    print("  optional tail mapping: add [monitor.ports] 8080 = llama-cuda.service, then run modelctl tail 8080")
     return 0
 
 
@@ -1231,10 +1232,17 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         "delete_requires_tty_confirmation": True,
         "archive_apply_supports_dry_run": True,
     }
+    monitor_ports = dict(config.items("monitor.ports")) if config.has_section("monitor.ports") else {}
+    monitor = {
+        "ports": monitor_ports,
+        "tail_example": "modelctl tail 8080",
+        "mapping_example": "[monitor.ports] 8080 = llama-cuda.service",
+        "read_only": True,
+    }
     if getattr(args, "json", False):
         _print_json(_json_envelope(
             "doctor",
-            {"checks": checks, "paths": paths, "safety": safety},
+            {"checks": checks, "paths": paths, "safety": safety, "monitor": monitor},
             status="ok" if exit_code == 0 else "error",
             warnings=warnings,
             error={"code": "doctor_failed", "message": "one or more checks failed"} if exit_code else None,
@@ -1247,6 +1255,13 @@ def cmd_doctor(args: argparse.Namespace, config: configparser.ConfigParser) -> i
         print(f"{status} {item['name']}{path}{detail}")
     for name, value in paths.items():
         print(f"OK {name.replace('_', ' ')}: {value}")
+    if monitor_ports:
+        print("Monitor tail mappings:")
+        for port, service in sorted(monitor_ports.items()):
+            print(f"  {port} -> {service}; run modelctl tail {port}")
+    else:
+        print("Monitor tail mappings: none configured")
+        print("  add [monitor.ports] 8080 = llama-cuda.service, then run modelctl tail 8080")
     print("Safety: delete requires interactive typed confirmation unless --dry-run; archive/apply commands accept --dry-run previews when you want smoke-test behavior.")
     return exit_code
 

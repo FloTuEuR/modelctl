@@ -60,6 +60,8 @@ ctx-size = 8192
             self.assertIn("aliases: 3", result.stdout)
             self.assertIn("Next:", result.stdout)
             self.assertIn("Setup written safely", result.stdout)
+            self.assertIn("[monitor.ports]", result.stdout)
+            self.assertIn("modelctl tail 8080", result.stdout)
             self.assertTrue(config.exists())
             self.assertTrue(registry.exists())
 
@@ -84,6 +86,8 @@ ctx-size = 8192
             self.assertIn("Next:", result.stdout)
             self.assertIn("modelctl doctor", result.stdout)
             self.assertIn("modelctl list", result.stdout)
+            self.assertIn("[monitor.ports]", result.stdout)
+            self.assertIn("modelctl tail 8080", result.stdout)
             self.assertNotIn("--config", result.stdout)
             self.assertTrue(config.exists())
             self.assertTrue(registry.exists())
@@ -103,6 +107,9 @@ ctx-size = 8192
             self.assertIn("router_ini:", doctor.stdout)
             self.assertIn("aliases (3)", doctor.stdout)
             self.assertIn("registry_writable:", doctor.stdout)
+            self.assertIn("Monitor tail mappings:", doctor.stdout)
+            self.assertIn("[monitor.ports]", doctor.stdout)
+            self.assertIn("modelctl tail 8080", doctor.stdout)
 
             show = self.run_modelctl("--config", str(config), "show", "1")
             self.assertEqual(show.returncode, 0, show.stderr + show.stdout)
@@ -157,6 +164,27 @@ download_dir = {root / "models"}
                     self.assertNotIn("Traceback", combined)
                     self.assertIn(str(missing_router_ini), combined)
                     self.assertIn("modelctl setup", combined)
+
+    def test_doctor_reports_configured_tail_mapping(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, router_ini, _shared, _solo = self.make_fixture(td)
+            config = root / "modelctl.ini"
+            registry = root / "modelctl.yaml"
+            setup = self.run_modelctl("setup", str(router_ini), "--config", str(config), "--registry", str(registry))
+            self.assertEqual(setup.returncode, 0, setup.stderr + setup.stdout)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write("\n[monitor.ports]\n8080 = llama-cuda.service\n")
+
+            doctor = self.run_modelctl("--config", str(config), "doctor")
+
+            self.assertEqual(doctor.returncode, 0, doctor.stderr + doctor.stdout)
+            self.assertIn("8080 -> llama-cuda.service", doctor.stdout)
+            self.assertIn("modelctl tail 8080", doctor.stdout)
+
+            doctor_json = self.run_modelctl("--config", str(config), "doctor", "--json")
+            self.assertEqual(doctor_json.returncode, 0, doctor_json.stderr + doctor_json.stdout)
+            self.assertIn('"8080": "llama-cuda.service"', doctor_json.stdout)
+            self.assertIn('"read_only": true', doctor_json.stdout)
 
 
 if __name__ == "__main__":
