@@ -267,6 +267,41 @@ class StorageMonitorTests(unittest.TestCase):
             self.assertEqual(payload["status"], "error")
             self.assertIn("--json cannot be combined with --follow", payload["error"]["message"])
 
+    def test_tail_requires_explicit_port_mapping(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+
+            result = self.run_modelctl("--config", str(config), "tail", "8080")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tail requires [monitor.ports] 8080", result.stderr)
+            self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_tail_follows_configured_port_service(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            bin_dir = self.make_fake_journalctl(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write("\n[monitor.ports]\n8080 = llama-cuda.service\n")
+            env = {"PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
+
+            result = self.run_modelctl("--config", str(config), "tail", "8080", "--lines", "5", env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("backend: systemd", result.stdout)
+            self.assertIn("service: llama-cuda.service", result.stdout)
+            self.assertIn("-u llama-cuda.service", result.stdout)
+            self.assertIn("-f", result.stdout)
+            self.assertIn("journal line", result.stdout)
+
+    def test_tail_help_explains_configured_mapping(self):
+        result = self.run_modelctl("tail", "-h")
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("modelctl tail 8080", result.stdout)
+        self.assertIn("[monitor.ports]", result.stdout)
+        self.assertIn("read-only", result.stdout)
+
     def test_monitor_help_is_plain_english_and_example_driven(self):
         result = self.run_modelctl("monitor", "-h")
 

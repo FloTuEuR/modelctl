@@ -314,10 +314,10 @@ Examples:
     Show status for the mini/helper llama server on port 8082.
 
   modelctl tail 8080
-    Follow logs for the service mapped to port 8080.
+    Follow logs for the service explicitly mapped to port 8080.
 
   modelctl restart 8080
-    Restart the service mapped to port 8080.
+    Restart examples are shown for operator context only; monitor commands never restart services.
 
 Options:
   --json
@@ -328,6 +328,18 @@ Options:
 
   --follow
     Follow logs when supported.
+"""
+
+
+TAIL_HELP = """Examples:
+  modelctl tail 8080
+    Follow logs for the service configured under [monitor.ports] 8080 = llama-cuda.service.
+
+Config example:
+  [monitor.ports]
+  8080 = llama-cuda.service
+
+This command is read-only and delegates to the configured systemd service log. It does not scan ports, guess services, or restart anything.
 """
 
 
@@ -2291,6 +2303,24 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
     return finish(2)
 
 
+def cmd_tail(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    port = str(getattr(args, "port", "")).strip()
+    section = "monitor.ports"
+    service = config.get(section, port, fallback="").strip()
+    if not service:
+        print(f"tail requires [{section}] {port} = <systemd-service>", file=sys.stderr)
+        return 2
+    derived = configparser.ConfigParser()
+    for existing_section in config.sections():
+        derived[existing_section] = dict(config.items(existing_section))
+    if not derived.has_section("monitor"):
+        derived.add_section("monitor")
+    derived.set("monitor", "backend", "systemd")
+    derived.set("monitor", "service", service)
+    monitor_args = argparse.Namespace(target="router", follow=True, lines=getattr(args, "lines", 80), json=False)
+    return cmd_monitor(monitor_args, derived)
+
+
 def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     print("Outcome rules for model/settings recommendations")
     print("  speed: 20+ t/s target")
@@ -2436,6 +2466,9 @@ def build_parser() -> argparse.ArgumentParser:
     monitor.add_argument("--follow", action="store_true", help="Follow logs when supported")
     monitor.add_argument("--lines", type=int, default=80, help="Show N recent log lines when logs are available")
     monitor.add_argument("--json", action="store_true", help="Print machine-readable output")
+    tail = sub.add_parser("tail", help="Follow configured logs for a local llama server port", description="Follow read-only configured logs for a local llama server port.", epilog=TAIL_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    tail.add_argument("port", metavar="PORT", help="Local llama server port mapped in [monitor.ports], e.g. 8080")
+    tail.add_argument("--lines", type=int, default=80, help="Show N recent log lines before following")
     sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
 
     return parser
@@ -2480,6 +2513,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_recover(args, config)
     if args.command == "monitor":
         return cmd_monitor(args, config)
+    if args.command == "tail":
+        return cmd_tail(args, config)
     if args.command == "rules":
         return cmd_rules(args, config)
     parser.error(f"Unhandled command: {args.command}")

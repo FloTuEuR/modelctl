@@ -48,12 +48,18 @@ Completed in Loop 7:
   style command without broad process/service discovery.
 - `--json --follow` fails clearly because JSON output is snapshot-oriented.
 
+Completed in Loop 8:
+- `modelctl tail 8080` is now backed by explicit `[monitor.ports]` service
+  mapping instead of being a stale help-only example.
+- Tail remains read-only and reuses the configured systemd backend behavior.
+
 Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Next loop: add command/help polish around `modelctl tail 8080` or explicit
-  service-to-port mapping only if a safe configured source exists.
+- Next loop: decide whether `modelctl restart 8080` should stay operator-context
+  help only, be removed from monitor help, or become an explicitly configured
+  guarded command in a separate non-monitor safety flow.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
@@ -64,7 +70,8 @@ Acceptance criteria for the remaining follow-up:
 - File backend can follow appended log lines.
 - Systemd backend covers explicit configured service logs without broad process
   scanning.
-- Next slice should reconcile `tail` help/examples with real behavior.
+- Tail examples are reconciled with real explicit mapping behavior.
+- Next slice should reconcile `restart` help/examples with product safety rules.
 
 ---
 

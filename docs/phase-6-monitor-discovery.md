@@ -124,6 +124,18 @@ The systemd backend is explicit and read-only. It does not discover, start, stop
 or restart services. Follow mode delegates to a `journalctl -u <service> -f`
 style command for the configured service.
 
+## Port tail mapping
+
+`modelctl tail 8080` follows logs only when the port is explicitly mapped:
+
+```ini
+[monitor.ports]
+8080 = llama-cuda.service
+```
+
+This keeps the port-centric operator example backed by real behavior without
+scanning processes or guessing service names.
+
 ## JSON output
 
 `--json` uses the standard modelctl envelope. Each candidate keeps the full

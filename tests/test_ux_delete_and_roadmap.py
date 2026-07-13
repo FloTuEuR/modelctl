@@ -59,6 +59,7 @@ ctx-size = 4096
             "import": ["Refresh", "modelctl import", "Router ini is not modified"],
             "doctor": ["configured paths", "modelctl doctor", "delete requires interactive"],
             "list": ["Models", "Aliases", "modelctl list"],
+            "tail": ["PORT", "modelctl tail 8080", "[monitor.ports]"],
         }
         for command, snippets in expected.items():
             with self.subTest(command=command):
