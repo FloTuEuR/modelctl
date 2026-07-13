@@ -41,13 +41,19 @@ Completed in Loop 6:
   file backend without mutating router/server/config state.
 - `--json --follow` fails clearly because JSON output is snapshot-oriented.
 
+Completed in Loop 7:
+- `[monitor] backend = systemd` with `service = ...` can show recent journal
+  lines via an explicit configured service.
+- `modelctl monitor router --follow` delegates to a `journalctl -u <service> -f`
+  style command without broad process/service discovery.
+- `--json --follow` fails clearly because JSON output is snapshot-oriented.
+
 Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Next loop: add a narrow `systemd`/journalctl-style backend for configured
-  service logs, aimed at output similar to `journalctl -u llama-cuda.service -f`
-  while staying read-only and explicit.
+- Next loop: add command/help polish around `modelctl tail 8080` or explicit
+  service-to-port mapping only if a safe configured source exists.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
@@ -56,8 +62,9 @@ Acceptance criteria for the remaining follow-up:
 - File backend shows which backend is in use.
 - File backend can show recent logs.
 - File backend can follow appended log lines.
-- Next backend slice should cover explicit configured service logs without broad
-  process scanning.
+- Systemd backend covers explicit configured service logs without broad process
+  scanning.
+- Next slice should reconcile `tail` help/examples with real behavior.
 
 ---
 

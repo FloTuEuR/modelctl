@@ -2188,6 +2188,8 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
                 print(f"  backend: {payload.get('backend')}", flush=flush)
                 if payload.get("log_file"):
                     print(f"  log file: {payload['log_file']}", flush=flush)
+                if payload.get("service"):
+                    print(f"  service: {payload['service']}", flush=flush)
                 for line in payload.get("lines", []):
                     print(line, flush=flush)
             else:
@@ -2247,7 +2249,40 @@ def cmd_monitor(args: argparse.Namespace, config: configparser.ConfigParser) -> 
                         time.sleep(0.2)
         except KeyboardInterrupt:
             return 130
-    if backend in {"systemd", "container", "docker", "command", "modelctl"}:
+    if backend == "systemd":
+        service = config.get("monitor", "service", fallback="").strip()
+        payload["service"] = service
+        if not service:
+            payload["status"] = "unconfigured"
+            payload["error"] = "monitor backend=systemd requires [monitor] service"
+            return finish(2)
+        if follow and as_json:
+            payload["status"] = "unsupported"
+            payload["error"] = "--json cannot be combined with --follow for monitor backend=systemd"
+            return finish(2)
+        journalctl = shutil.which("journalctl")
+        if not journalctl:
+            payload["status"] = "missing"
+            payload["error"] = "journalctl is not available on this system"
+            return finish(1)
+        cmd = [journalctl, "-u", service, "-n", str(lines_requested), "--no-pager", "-o", "cat"]
+        if follow:
+            cmd.insert(5, "-f")
+            payload["status"] = "ok"
+            payload["command"] = ["journalctl", "-u", service, "-n", str(lines_requested), "-f", "--no-pager", "-o", "cat"]
+            payload["lines"] = []
+            finish(0)
+            return subprocess.call(cmd)
+        result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        payload["command"] = ["journalctl", "-u", service, "-n", str(lines_requested), "--no-pager", "-o", "cat"]
+        payload["lines"] = result.stdout.splitlines()
+        if result.returncode != 0:
+            payload["status"] = "error"
+            payload["error"] = result.stderr.strip() or f"journalctl exited {result.returncode}"
+            return finish(result.returncode)
+        payload["status"] = "ok"
+        return finish(0)
+    if backend in {"container", "docker", "command", "modelctl"}:
         payload["status"] = "not_implemented"
         payload["error"] = f"monitor backend '{backend}' is recognized but not implemented yet"
         return finish(2)

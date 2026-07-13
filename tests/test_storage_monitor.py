@@ -196,6 +196,77 @@ class StorageMonitorTests(unittest.TestCase):
             self.assertEqual(payload["status"], "error")
             self.assertIn("--json cannot be combined with --follow", payload["error"]["message"])
 
+    def make_fake_journalctl(self, td: str):
+        bin_dir = Path(td) / "bin"
+        bin_dir.mkdir()
+        sh = bin_dir / "journalctl"
+        sh.write_text('#!/bin/sh\necho "ARGS:$*"\necho "journal line"\n', encoding="utf-8")
+        sh.chmod(0o755)
+        cmd = bin_dir / "journalctl.cmd"
+        cmd.write_text('@echo off\necho ARGS:%*\necho journal line\n', encoding="utf-8")
+        return bin_dir
+
+    def test_monitor_systemd_backend_requires_service(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write("\n[monitor]\nbackend = systemd\n")
+
+            result = self.run_modelctl("--config", str(config), "monitor", "router")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("backend=systemd requires [monitor] service", result.stderr)
+
+    def test_monitor_systemd_backend_reads_configured_service_logs(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            bin_dir = self.make_fake_journalctl(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write("\n[monitor]\nbackend = systemd\nservice = llama-cuda.service\n")
+            env = {"PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
+
+            result = self.run_modelctl("--config", str(config), "monitor", "router", "--lines", "7", "--json", env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            data = payload["data"]
+            self.assertEqual(data["backend"], "systemd")
+            self.assertEqual(data["service"], "llama-cuda.service")
+            self.assertEqual(data["status"], "ok")
+            self.assertIn("journal line", data["lines"])
+            self.assertEqual(data["command"], ["journalctl", "-u", "llama-cuda.service", "-n", "7", "--no-pager", "-o", "cat"])
+
+    def test_monitor_systemd_backend_follow_delegates_to_journalctl(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            bin_dir = self.make_fake_journalctl(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write("\n[monitor]\nbackend = systemd\nservice = llama-cuda.service\n")
+            env = {"PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
+
+            result = self.run_modelctl("--config", str(config), "monitor", "router", "--lines", "3", "--follow", env=env)
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("backend: systemd", result.stdout)
+            self.assertIn("service: llama-cuda.service", result.stdout)
+            self.assertIn("-u llama-cuda.service", result.stdout)
+            self.assertIn("-f", result.stdout)
+            self.assertIn("journal line", result.stdout)
+            self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_monitor_systemd_backend_json_follow_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _doomed = self.make_fixture(td)
+            with config.open("a", encoding="utf-8") as fh:
+                fh.write("\n[monitor]\nbackend = systemd\nservice = llama-cuda.service\n")
+
+            result = self.run_modelctl("--config", str(config), "monitor", "router", "--follow", "--json")
+
+            self.assertNotEqual(result.returncode, 0)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("--json cannot be combined with --follow", payload["error"]["message"])
+
     def test_monitor_help_is_plain_english_and_example_driven(self):
         result = self.run_modelctl("monitor", "-h")
 

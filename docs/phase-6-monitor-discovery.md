@@ -103,6 +103,27 @@ new lines appended to the configured file until interrupted. JSON output remains
 for snapshots only; `--json --follow` fails clearly instead of producing an
 ambiguous streaming envelope.
 
+## Configured systemd backend
+
+For a known systemd service, configure:
+
+```ini
+[monitor]
+backend = systemd
+service = llama-cuda.service
+```
+
+Then use:
+
+```bash
+modelctl monitor router --lines 50
+modelctl monitor router --follow
+```
+
+The systemd backend is explicit and read-only. It does not discover, start, stop,
+or restart services. Follow mode delegates to a `journalctl -u <service> -f`
+style command for the configured service.
+
 ## JSON output
 
 `--json` uses the standard modelctl envelope. Each candidate keeps the full

@@ -3,17 +3,17 @@
 Objective:
 Keep monitor work moving through small, committed, resumable loops with GitHub as source of truth.
 
-Completed loop:
-Loop 6 — configured file-backend follow logs.
+Completed loops:
+- Loop 6 — configured file-backend follow logs.
+- Loop 7 — explicit systemd/journalctl-style monitor backend.
 
-Loop 6 scope:
-- Add the first real configured monitor backend behavior after monitor discovery UX.
-- Keep behavior read-only.
-- Report backend details.
-- Show recent configured log lines.
-- Follow appended log lines for the configured file backend.
+Loop 6 result:
+`[monitor] backend = file` with `log_file = ...` can show recent lines and `modelctl monitor router --follow` streams appended lines until interrupted.
 
-Files changed in Loop 6:
+Loop 7 result:
+`[monitor] backend = systemd` with `service = ...` can show recent journal lines and `modelctl monitor router --follow` delegates to a `journalctl -u <service> -f` style read-only command.
+
+Files changed across these loops:
 - modelctl.py
 - tests/test_storage_monitor.py
 - docs/backlog.md
@@ -21,7 +21,7 @@ Files changed in Loop 6:
 - README.md
 - .agent/WORKLOOP.md
 
-Out of scope for Loop 6:
+Out of scope preserved:
 - broad process scanning
 - service-name guessing
 - router start/stop/restart behavior
@@ -29,35 +29,28 @@ Out of scope for Loop 6:
 - benchmark / recommend flows
 - GPU/model-management changes
 
-Decision:
-The narrowest coherent backend was `[monitor] backend = file` with `log_file = ...`.
-`modelctl monitor router --follow` now prints the current tail and streams appended lines from that file until interrupted. `--json --follow` fails clearly because JSON output is a snapshot envelope, not a stream.
-
-Validation run for Loop 6:
+Validation run:
 - `python -m py_compile modelctl.py tests/test_storage_monitor.py`
 - `python -m unittest tests.test_storage_monitor -v`
+- `python -m unittest discover -s tests -v`
+- `python scripts/check_private_markers.py`
+- `git diff --check`
 
 Next loop:
-Loop 7 — explicit systemd/journalctl-style monitor backend.
+Loop 8 — reconcile port-centric monitor examples with real commands.
 
-Loop 7 recommended slice:
-1. Add config-driven service log monitoring only; do not scan all processes.
-2. Support a clear config shape such as:
-   - `[monitor] backend = systemd`
-   - `service = llama-cuda.service`
-3. Make `modelctl monitor router --follow` produce behavior similar to:
-   - `journalctl -u llama-cuda.service -f`
-4. Keep it read-only.
-5. Add tests that mock the subprocess call rather than requiring systemd in CI.
-6. Preserve the existing file-backend behavior and JSON snapshot behavior.
+Loop 8 recommended slice:
+1. Inspect current `tail` command implementation and monitor help examples.
+2. Decide whether `modelctl tail 8080` should become real, be redirected to monitor, or be removed from examples until backed by implementation.
+3. If adding behavior, use explicit configured mapping only; do not scan processes or guess service names.
+4. Add tests first for help/examples and the chosen command behavior.
+5. Keep all monitor/tail behavior read-only.
 
-Loop 7 acceptance criteria:
-- systemd backend reports the configured service name.
-- non-follow mode shows recent journal lines.
-- follow mode delegates to an explicit `journalctl -u <service> -f`-style command.
-- missing `service` fails clearly.
-- unsupported JSON follow behavior is clear and tested.
-- no broad service/process discovery is added.
+Loop 8 acceptance criteria:
+- no help example points at an unsupported command
+- the journalctl-like path for `llama-cuda.service` remains available through explicit systemd config
+- JSON snapshot behavior remains stable
+- follow behavior remains non-JSON and clear
 
 Blocker:
-None for Loop 7 planning. The implementation should stay narrow and configured-only.
+None for Loop 8 planning. The implementation should stay narrow and configured-only.
