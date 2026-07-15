@@ -420,6 +420,39 @@ class JsonOutputSchemasTests(unittest.TestCase):
             self.assertIn("No files or ini entries were changed", result.stdout)
             self.assertNotIn('"status"', result.stdout)
 
+
+    def test_add_positional_dry_run_json_envelope(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config, _registry = self.make_fixture(td)
+            result = self.run_modelctl(
+                "--config", str(config),
+                "add", "my-model", "/some/path.gguf",
+                "--dry-run", "--json",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            payload = json.loads(result.stdout)
+            self.assert_envelope(payload, "add")
+            self.assertEqual(payload["data"]["alias"], "my-model")
+            self.assertEqual(payload["data"]["model_path"], "/some/path.gguf")
+            self.assertTrue(payload["data"]["dry_run"])
+
+    def test_list_positional_filters_match_flags(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _ini, config, _reg, _m1, _m2 = self._make_two_model_fixture(td)
+            pairs = [
+                ("archived", "--archived"),
+                ("active", "--active"),
+                ("enabled", "--enabled"),
+                ("disabled", "--disabled"),
+            ]
+            for positional, flag in pairs:
+                with self.subTest(positional=positional):
+                    by_pos = self.run_modelctl("--config", str(config), "list", positional, "--json")
+                    by_flag = self.run_modelctl("--config", str(config), "list", "--json", flag)
+                    self.assertEqual(by_pos.returncode, 0, by_pos.stderr + by_pos.stdout)
+                    self.assertEqual(by_flag.returncode, 0, by_flag.stderr + by_flag.stdout)
+                    self.assertEqual(json.loads(by_pos.stdout)["data"], json.loads(by_flag.stdout)["data"])
+
     def test_add_apply_json_envelope(self):
         with tempfile.TemporaryDirectory() as td:
             _root, _router_ini, config, _registry = self.make_fixture(td)

@@ -237,8 +237,11 @@ ADD_HELP = """Create a new router ini entry with estimated best default flags/se
 Applies by default. Use --dry-run to preview the generated entry first.
 
 Examples:
+  modelctl add my-model /path/to/model.gguf
+  modelctl add my-model /path/to/model.gguf --dry-run
+
+Compatibility flags remain available for older automation:
   modelctl add --alias my-model --model /path/to/model.gguf
-  modelctl add --alias my-model --model /path/to/model.gguf --dry-run
 """
 
 ADD_ENTRY_HELP = """deprecated compatibility alias for `modelctl add`.
@@ -666,6 +669,28 @@ def cmd_list(args: argparse.Namespace, config: configparser.ConfigParser) -> int
     show_archived = getattr(args, "archived", False)
     show_enabled = getattr(args, "enabled", False)
     show_disabled = getattr(args, "disabled", False)
+    if target:
+        t = target.lower()
+        positional_filters = {
+            "active": "active",
+            "archived": "archived",
+            "archive": "archived",
+            "enabled": "enabled",
+            "disabled": "disabled",
+        }
+        selected_filter = positional_filters.get(t)
+        if selected_filter == "active":
+            show_active = True
+            target = None
+        elif selected_filter == "archived":
+            show_archived = True
+            target = None
+        elif selected_filter == "enabled":
+            show_enabled = True
+            target = None
+        elif selected_filter == "disabled":
+            show_disabled = True
+            target = None
     if show_active and show_archived:
         print("Cannot combine --active and --archived", file=sys.stderr)
         return 2
@@ -1699,39 +1724,44 @@ def cmd_enable_disable(args: argparse.Namespace, config: configparser.ConfigPars
 
 def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     router_ini = Path(config.get("router", "ini")).expanduser()
+    alias = getattr(args, "alias", None) or getattr(args, "alias_pos", None)
+    model = getattr(args, "model", None) or getattr(args, "model_pos", None)
+    if not alias or not model:
+        print("modelctl add requires an alias and model path; use `modelctl add NAME /path/model.gguf`", file=sys.stderr)
+        return 2
     if getattr(args, 'dry_run', False):
         if getattr(args, 'json', False):
             planned_changes = [
-                f"append section [{args.alias}] to router ini",
-                f"set model = {args.model}",
+                f"append section [{alias}] to router ini",
+                f"set model = {model}",
                 "set ctx-size = 65536",
                 "set n-gpu-layers = 999",
                 "set flash-attn = on",
             ]
             _print_json(_json_envelope("add", {
                 "target_path": str(router_ini),
-                "alias": args.alias,
-                "model_path": args.model,
+                "alias": alias,
+                "model_path": model,
                 "dry_run": True,
                 "would_write_ini": False,
                 "planned_changes": planned_changes,
             }))
             return 0
         print("Router ini entry plan with estimated best defaults")
-        print(f"  alias: {args.alias}")
-        print(f"  model: {args.model}")
+        print(f"  alias: {alias}")
+        print(f"  model: {model}")
         print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
         print("No ini entries were changed.")
         return 0
     if not getattr(args, 'json', False):
         print("Router ini entry plan with estimated best defaults")
-        print(f"  alias: {args.alias}")
-        print(f"  model: {args.model}")
+        print(f"  alias: {alias}")
+        print(f"  model: {model}")
         print("  estimated flags: ctx-size = 65536, n-gpu-layers = 999, flash-attn = true")
     existing = router_ini.read_text(encoding="utf-8") if router_ini.exists() else ""
     block = "\n".join([
-        f"[{args.alias}]",
-        f"model = {args.model}",
+        f"[{alias}]",
+        f"model = {model}",
         "ctx-size = 65536",
         "n-gpu-layers = 999",
         "flash-attn = on",
@@ -1742,12 +1772,12 @@ def cmd_add_entry(args: argparse.Namespace, config: configparser.ConfigParser) -
         _print_json(_json_envelope("add", {
             "applied": True,
             "dry_run": False,
-            "alias": args.alias,
-            "model_path": args.model,
+            "alias": alias,
+            "model_path": model,
             "ini_path": str(router_ini),
         }))
         return 0
-    print(f"APPLIED: appended [{args.alias}] to {router_ini}")
+    print(f"APPLIED: appended [{alias}] to {router_ini}")
     return 0
 
 
@@ -2691,8 +2721,10 @@ def build_parser() -> argparse.ArgumentParser:
     disable.add_argument("target", metavar="TARGET", help="Alias or model target, e.g. a2, qwen-mini, or model filename/stem")
     disable.add_argument("--dry-run", action="store_true", help="Preview ini edit without changing anything")
     add = sub.add_parser("add", help="Create an ini entry with estimated best defaults", description="Create a router ini entry with estimated best default flags/settings.", epilog=ADD_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    add.add_argument("--alias", required=True, help="Router alias/section name to create")
-    add.add_argument("--model", required=True, help="GGUF model path for the new entry")
+    add.add_argument("alias_pos", nargs="?", metavar="NAME", help="Router alias/section name to create")
+    add.add_argument("model_pos", nargs="?", metavar="MODEL.gguf", help="GGUF model path for the new entry")
+    add.add_argument("--alias", help="Compatibility: router alias/section name to create")
+    add.add_argument("--model", help="Compatibility: GGUF model path for the new entry")
     add.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
     add.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
     add_entry = sub.add_parser("add-entry", help="Deprecated alias for add", description="Deprecated compatibility alias for `modelctl add`.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
