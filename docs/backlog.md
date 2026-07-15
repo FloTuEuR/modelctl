@@ -134,6 +134,47 @@ Future work:
 
 ---
 
+### B-005 - CLI efficiency cleanup
+
+Status: queued
+Phase: CLI UX simplification
+Scope: medium
+Owner: local coding-agent candidate
+
+Principle:
+- Common human commands should be short and obvious.
+- Flags/options should be rare-case appendices, not required for normal usage.
+- Avoid unnecessary command-tree depth and overlapping command concepts.
+
+Priority slices:
+1. Add positional syntax for model add:
+   - Prefer `modelctl add NAME /path/model.gguf` for the normal case.
+   - Keep `--alias` and `--model` as compatibility/automation aliases.
+   - Tests must cover old and new syntax.
+2. Add positional list filters for human use:
+   - Support `modelctl list archived`, `modelctl list active`, `modelctl list enabled`, `modelctl list disabled`, `modelctl list aliases`, and `modelctl list models`.
+   - Keep existing flags for compatibility/automation.
+   - Tests must cover conflict/invalid-filter behavior.
+3. Demote stale monitor log-follow UX:
+   - Docs should prefer `modelctl router logs cuda` and `modelctl tail 8080`.
+   - Avoid recommending `modelctl monitor router --follow` as the primary human path.
+   - Do not break existing monitor behavior without a compatibility plan.
+4. Hide or de-emphasize deprecated `add-entry` in primary help/docs while keeping it working.
+5. Consider a concise router reset alias:
+   - `modelctl router reset cuda` may alias `modelctl router reset-failed cuda`.
+   - Keep `reset-failed` for explicit/systemctl-compatible usage.
+6. Revisit `router command` as an advanced/meta diagnostic:
+   - Consider renaming/demoting to `router explain`, or rely on `--json`/`--dry-run` for command metadata.
+   - Do not remove compatibility without tests and migration notes.
+
+Acceptance criteria:
+- Common examples avoid required `--` flags unless the flag is genuinely rare/safety/automation-oriented.
+- Top-level help remains understandable despite compatibility aliases.
+- Focused tests cover new efficient syntax and old compatibility syntax.
+- Full unittest suite and private marker scan pass.
+
+---
+
 ## Related operational references
 
 - Stable JSON output: `docs/json-output.md`
