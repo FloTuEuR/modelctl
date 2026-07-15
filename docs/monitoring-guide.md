@@ -15,11 +15,21 @@ Discovery remains read-only. It checks configured/common local OpenAI-compatible
 
 ## Configured monitor backend
 
+Use these for snapshots of explicitly configured monitor backends:
+
 ```bash
 modelctl monitor router
-modelctl monitor router --follow
 modelctl monitor router --lines 200
 ```
+
+For live human log follow, prefer the clearer wrappers:
+
+```bash
+modelctl tail 8080
+modelctl router logs cuda
+```
+
+`modelctl monitor router --follow` remains available for compatibility with configured file/systemd monitor backends, but it is no longer the primary operator path.
 
 Supported configured backends today:
 
@@ -74,7 +84,8 @@ Lifecycle actions live under `modelctl router` rather than `monitor`, because `m
 
 ```bash
 modelctl router restart cuda
-modelctl router reset-failed cuda
+modelctl router reset cuda
+modelctl router reset-failed cuda  # compatibility/systemctl spelling
 modelctl router start cuda
 ```
 

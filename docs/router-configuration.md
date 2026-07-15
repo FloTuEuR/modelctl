@@ -44,7 +44,8 @@ These commands intentionally mutate systemd service state because the user expli
 modelctl router restart cuda
 modelctl router restart vulkan
 modelctl router restart cpu
-modelctl router reset-failed cuda
+modelctl router reset cuda
+modelctl router reset-failed cuda  # compatibility/systemctl spelling
 modelctl router start cuda
 ```
 
@@ -60,14 +61,14 @@ sudo systemctl start llama-cuda.service
 
 Use `--dry-run` to print the command without executing it. Use `--no-sudo` only when running in an environment where direct `systemctl` is appropriate.
 
-## Status and command preview
+## Status and advanced command preview
 
 ```bash
 modelctl router status cuda
-modelctl router command logs cuda
-modelctl router command restart vulkan
 modelctl router services
 ```
+
+For automation/debugging, `modelctl router command ACTION TARGET --json` previews the wrapped command without executing it. Keep this as an advanced diagnostic; common human usage should prefer direct wrappers such as `router logs`, `router restart`, and `router reset`.
 
 `status`, `command`, and `services` are read-only. JSON output is available via `--json` for automation.
 
@@ -76,4 +77,5 @@ modelctl router services
 - Service targets are config/default driven; modelctl does not scan processes or guess arbitrary service names.
 - Unknown targets fail clearly and list configured targets.
 - `logs`, `status`, `command`, and `services` are read-only.
-- `restart`, `reset-failed`, and `start` are explicit systemd state changes and return the underlying command's exit code.
+- `restart`, `reset`, `reset-failed`, and `start` are explicit systemd state changes and return the underlying command's exit code.
+- `reset` is the concise spelling for `reset-failed`; `reset-failed` remains available for compatibility and systemctl familiarity.

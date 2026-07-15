@@ -33,7 +33,7 @@ update-check, enable, disable, add, add-entry, benchmark, scan,
 restore, recover, monitor, tail, router, rules
 ```
 
-`add-entry` is retained only as a deprecated compatibility alias for `add`.
+`add-entry` is retained only as a deprecated compatibility alias for `add` and is hidden from primary help.
 
 ## Implemented / mostly implemented
 
@@ -68,7 +68,7 @@ restore, recover, monitor, tail, router, rules
 - Port-centric `tail` for explicitly configured `[monitor.ports]` service mappings.
 - Clear monitor guidance when no monitor backend is configured, including `modelctl monitor discover` as the suggested next command.
 - Setup/doctor guidance for explicit tail mappings without guessing service names.
-- Router service wrappers for configured/common systemd services: `router logs`, `router status`, `router command`, `router restart`, `router reset-failed`, and `router start`.
+- Router service wrappers for configured/common systemd services: `router logs`, `router status`, `router restart`, concise `router reset`, compatibility `router reset-failed`, `router start`, and advanced `router command` preview.
 - Documentation for safety, JSON output, lifecycle operations, settings rules, release readiness, roadmap, and backlog.
 
 ## Features still to build
@@ -130,7 +130,7 @@ restore, recover, monitor, tail, router, rules
 
 See [`docs/backlog.md`](docs/backlog.md). As of this update:
 
-- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, setup/doctor tail guidance, and router service wrappers for log-follow/status/restart/reset-failed/start.
+- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, setup/doctor tail guidance, and router service wrappers for log-follow/status/restart/reset/reset-failed/start.
 - Partially complete: monitor discovery; optional process-list discovery and non-file/non-systemd backends remain undecided.
 - Next high-value slices: richer monitor backends, recommendation/classification pipeline, and source metadata/download workflows.
 

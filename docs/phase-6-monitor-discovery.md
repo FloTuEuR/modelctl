@@ -88,17 +88,18 @@ backend = file
 log_file = /path/to/router.log
 ```
 
-Then use:
+For snapshots, use:
 
 ```bash
 modelctl monitor router --lines 50
-modelctl monitor router --follow
 ```
 
-The file backend is read-only. `--follow` prints the current tail, then streams
-new lines appended to the configured file until interrupted. JSON output remains
-for snapshots only; `--json --follow` fails clearly instead of producing an
-ambiguous streaming envelope.
+The file backend is read-only. `modelctl monitor router --follow` remains as a
+compatibility path that prints the current tail, then streams new lines appended
+to the configured file until interrupted. Prefer `modelctl tail 8080` or
+`modelctl router logs cuda` for normal operator log-follow workflows. JSON
+output remains for snapshots only; `--json --follow` fails clearly instead of
+producing an ambiguous streaming envelope.
 
 ## Configured systemd backend
 
@@ -110,16 +111,17 @@ backend = systemd
 service = llama-cuda.service
 ```
 
-Then use:
+For snapshots, use:
 
 ```bash
 modelctl monitor router --lines 50
-modelctl monitor router --follow
 ```
 
 The systemd backend is explicit and read-only. It does not discover, start, stop,
-or restart services. Follow mode delegates to a `journalctl -u <service> -f`
-style command for the configured service.
+or restart services. `modelctl monitor router --follow` remains available as a
+compatibility path that delegates to a `journalctl -u <service> -f` style command
+for the configured service. Prefer `modelctl router logs cuda` for common router
+service log follow.
 
 ## Port tail mapping
 

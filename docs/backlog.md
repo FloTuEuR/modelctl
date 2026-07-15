@@ -136,7 +136,7 @@ Future work:
 
 ### B-005 - CLI efficiency cleanup
 
-Status: queued
+Status: completed
 Phase: CLI UX simplification
 Scope: medium
 Owner: local coding-agent candidate
@@ -146,7 +146,7 @@ Principle:
 - Flags/options should be rare-case appendices, not required for normal usage.
 - Avoid unnecessary command-tree depth and overlapping command concepts.
 
-Priority slices:
+Completed slices:
 1. Add positional syntax for model add:
    - Prefer `modelctl add NAME /path/model.gguf` for the normal case.
    - Keep `--alias` and `--model` as compatibility/automation aliases.
@@ -155,19 +155,16 @@ Priority slices:
    - Support `modelctl list archived`, `modelctl list active`, `modelctl list enabled`, `modelctl list disabled`, `modelctl list aliases`, and `modelctl list models`.
    - Keep existing flags for compatibility/automation.
    - Tests must cover conflict/invalid-filter behavior.
-3. Demote stale monitor log-follow UX:
-   - Docs should prefer `modelctl router logs cuda` and `modelctl tail 8080`.
-   - Avoid recommending `modelctl monitor router --follow` as the primary human path.
-   - Do not break existing monitor behavior without a compatibility plan.
-4. Hide or de-emphasize deprecated `add-entry` in primary help/docs while keeping it working.
-5. Consider a concise router reset alias:
-   - `modelctl router reset cuda` may alias `modelctl router reset-failed cuda`.
-   - Keep `reset-failed` for explicit/systemctl-compatible usage.
-6. Revisit `router command` as an advanced/meta diagnostic:
-   - Consider renaming/demoting to `router explain`, or rely on `--json`/`--dry-run` for command metadata.
-   - Do not remove compatibility without tests and migration notes.
+3. Demoted stale monitor log-follow UX:
+   - Docs prefer `modelctl router logs cuda` and `modelctl tail 8080`.
+   - `modelctl monitor router --follow` remains available as a compatibility path for configured monitor backends.
+4. Hid/de-emphasized deprecated `add-entry` in primary help while keeping `modelctl add-entry -h` and command behavior working.
+5. Added concise router reset alias:
+   - `modelctl router reset cuda` aliases `modelctl router reset-failed cuda`.
+   - `reset-failed` remains for explicit/systemctl-compatible usage.
+6. Demoted `router command` as an advanced/meta diagnostic in docs; direct wrappers remain the primary human path.
 
-Acceptance criteria:
+Acceptance criteria met:
 - Common examples avoid required `--` flags unless the flag is genuinely rare/safety/automation-oriented.
 - Top-level help remains understandable despite compatibility aliases.
 - Focused tests cover new efficient syntax and old compatibility syntax.

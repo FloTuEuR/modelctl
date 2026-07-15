@@ -391,10 +391,12 @@ Command:
 ```bash
 modelctl monitor
 modelctl monitor router
-modelctl monitor router --follow
 modelctl monitor router --lines 200
-modelctl monitor router --since "10 minutes ago"
+modelctl tail 8080
+modelctl router logs cuda
 ```
+
+`modelctl monitor router --follow` remains a compatibility path for configured monitor backends, but primary human log-follow UX should prefer `tail` or `router logs`.
 
 Required behaviour:
 

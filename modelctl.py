@@ -362,8 +362,11 @@ Examples:
   modelctl router restart vulkan
     Run: sudo systemctl restart llama-vulkan.service
 
-  modelctl router reset-failed cuda
+  modelctl router reset cuda
     Run: sudo systemctl reset-failed llama-cuda.service
+
+  modelctl router reset-failed cuda
+    Compatibility spelling for operators who prefer the systemctl action name.
 
   modelctl router start cuda
     Run: sudo systemctl start llama-cuda.service
@@ -2480,8 +2483,15 @@ def _router_command_for(action: str, service: str, *, follow: bool = False, line
     raise ValueError(f"unsupported router action: {action}")
 
 
+def _executable_command(cmd: list[str]) -> list[str]:
+    resolved = shutil.which(cmd[0])
+    return [resolved, *cmd[1:]] if resolved else cmd
+
+
 def cmd_router(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
     action = getattr(args, "router_command", "")
+    if action == "reset":
+        action = "reset-failed"
     as_json = bool(getattr(args, "json", False))
     if action == "services":
         services = _router_service_map(config)
@@ -2511,7 +2521,7 @@ def _cmd_router_status(args: argparse.Namespace, config: configparser.ConfigPars
     if service is None:
         return _router_unknown_target(target, services, as_json=as_json)
     cmd = _router_command_for("status", service)
-    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    result = subprocess.run(_executable_command(cmd), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     state = result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}"
     payload = {
         "target": target,
@@ -2578,7 +2588,7 @@ def _cmd_router_logs(args: argparse.Namespace, config: configparser.ConfigParser
     print("Router logs")
     print(f"  service: {service}")
     print(f"  command: {' '.join(cmd)}")
-    return subprocess.call(cmd)
+    return subprocess.call(_executable_command(cmd))
 
 
 def _cmd_router_systemctl(args: argparse.Namespace, config: configparser.ConfigParser, action: str) -> int:
@@ -2596,7 +2606,7 @@ def _cmd_router_systemctl(args: argparse.Namespace, config: configparser.ConfigP
         print("Router systemd action dry run")
         print(f"  command: {' '.join(cmd)}")
         return 0
-    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    result = subprocess.run(_executable_command(cmd), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     payload["returncode"] = result.returncode
     payload["stdout"] = result.stdout.splitlines()
     payload["stderr"] = result.stderr.splitlines()
@@ -2621,7 +2631,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to modelctl config.ini")
-    sub = parser.add_subparsers(dest="command", required=True)
+    visible_commands = "{setup,import,doctor,list,show,aliases,delete,archive,update-check,enable,disable,add,benchmark,scan,restore,recover,monitor,tail,rules,router}"
+    sub = parser.add_subparsers(dest="command", required=True, metavar=visible_commands)
 
     setup = sub.add_parser(
         "setup",
@@ -2727,7 +2738,8 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--model", help="Compatibility: GGUF model path for the new entry")
     add.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
     add.add_argument("--json", action="store_true", help="Emit stable JSON envelope output")
-    add_entry = sub.add_parser("add-entry", help="Deprecated alias for add", description="Deprecated compatibility alias for `modelctl add`.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_entry = sub.add_parser("add-entry", help=argparse.SUPPRESS, description="Deprecated compatibility alias for `modelctl add`.", epilog=ADD_ENTRY_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub._choices_actions = [action for action in sub._choices_actions if action.dest != "add-entry"]
     add_entry.add_argument("--alias", required=True, help="Router alias/section name to create")
     add_entry.add_argument("--model", required=True, help="GGUF model path for the new entry")
     add_entry.add_argument("--dry-run", action="store_true", help="Preview entry without appending anything")
@@ -2768,13 +2780,15 @@ def build_parser() -> argparse.ArgumentParser:
     router_logs.add_argument("--no-follow", action="store_true", help="Rare: show recent lines instead of following live")
     router_logs.add_argument("--lines", type=int, default=80, help="Rare: show N recent lines with --no-follow")
     router_logs.add_argument("--json", action="store_true", help="Print command metadata instead of running journalctl")
-    for action_name in ("restart", "reset-failed", "start"):
-        action_parser = router_sub.add_parser(action_name, help=f"Run sudo systemctl {action_name} for a configured router service")
+    for action_name in ("restart", "reset", "reset-failed", "start"):
+        systemctl_action = "reset-failed" if action_name == "reset" else action_name
+        help_text = "Reset failed state for a configured router service" if action_name == "reset" else f"Run sudo systemctl {systemctl_action} for a configured router service"
+        action_parser = router_sub.add_parser(action_name, help=help_text)
         action_parser.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
         action_parser.add_argument("--dry-run", action="store_true", help="Print the systemctl command without executing it")
         action_parser.add_argument("--no-sudo", action="store_true", help="Run systemctl directly instead of through sudo")
         action_parser.add_argument("--json", action="store_true", help="Print machine-readable output")
-    router_command = router_sub.add_parser("command", help="Show the wrapped journalctl/systemctl command")
+    router_command = router_sub.add_parser("command", help="Advanced: preview the wrapped journalctl/systemctl command")
     router_command.add_argument("action", choices=["logs", "status", "restart", "reset-failed", "start"], help="Wrapped action to show")
     router_command.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
     router_command.add_argument("--no-follow", action="store_true", help="Rare: show recent-lines journalctl command for logs")

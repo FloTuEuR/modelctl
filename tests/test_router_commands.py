@@ -48,15 +48,25 @@ class RouterCommandTests(unittest.TestCase):
         bin_dir.mkdir()
         log = Path(td) / "commands.log"
         for name in ("journalctl", "systemctl", "sudo"):
-            sh = bin_dir / name
-            sh.write_text(
-                "#!/bin/sh\n"
-                f"echo {name}:$@ >> {log}\n"
-                "if [ \"$1\" = \"is-active\" ]; then echo active; exit 0; fi\n"
-                "echo output:$@\n",
-                encoding="utf-8",
-            )
-            sh.chmod(0o755)
+            if os.name == "nt":
+                shim = bin_dir / f"{name}.bat"
+                shim.write_text(
+                    "@echo off\r\n"
+                    f"echo {name}:%* >> \"{log}\"\r\n"
+                    "if \"%1\"==\"is-active\" echo active& exit /b 0\r\n"
+                    "echo output:%*\r\n",
+                    encoding="utf-8",
+                )
+            else:
+                shim = bin_dir / name
+                shim.write_text(
+                    "#!/bin/sh\n"
+                    f"echo {name}:$@ >> {log}\n"
+                    "if [ \"$1\" = \"is-active\" ]; then echo active; exit 0; fi\n"
+                    "echo output:$@\n",
+                    encoding="utf-8",
+                )
+                shim.chmod(0o755)
         return bin_dir, log
 
     def test_router_help_wraps_systemd_service_shortcuts(self):
@@ -66,7 +76,7 @@ class RouterCommandTests(unittest.TestCase):
         self.assertIn("router logs cuda", result.stdout)
         self.assertNotIn("router logs cuda --follow", result.stdout)
         self.assertIn("router restart vulkan", result.stdout)
-        self.assertIn("router reset-failed cuda", result.stdout)
+        self.assertIn("router reset cuda", result.stdout)
         self.assertIn("router start cpu", result.stdout)
         self.assertNotIn("router reload", result.stdout)
 
@@ -118,6 +128,22 @@ class RouterCommandTests(unittest.TestCase):
             self.assertIn("sudo:systemctl restart llama-cpu.service", recorded)
             self.assertIn("sudo:systemctl reset-failed llama-cuda.service", recorded)
             self.assertIn("sudo:systemctl start llama-cuda.service", recorded)
+
+
+    def test_router_reset_shorthand_aliases_reset_failed(self):
+        with tempfile.TemporaryDirectory() as td:
+            _root, _router_ini, config = self.make_fixture(td)
+
+            shorthand = self.run_modelctl("--config", str(config), "router", "reset", "cuda", "--dry-run", "--json")
+            explicit = self.run_modelctl("--config", str(config), "router", "reset-failed", "cuda", "--dry-run", "--json")
+
+            self.assertEqual(shorthand.returncode, 0, shorthand.stderr + shorthand.stdout)
+            self.assertEqual(explicit.returncode, 0, explicit.stderr + explicit.stdout)
+            shorthand_payload = json.loads(shorthand.stdout)
+            explicit_payload = json.loads(explicit.stdout)
+            self.assertEqual(shorthand_payload["data"]["action"], "reset-failed")
+            self.assertEqual(shorthand_payload["data"]["command"], explicit_payload["data"]["command"])
+            self.assertEqual(shorthand_payload["data"]["command"], ["sudo", "systemctl", "reset-failed", "llama-cuda.service"])
 
     def test_router_unknown_service_fails_actionably_without_guessing(self):
         with tempfile.TemporaryDirectory() as td:

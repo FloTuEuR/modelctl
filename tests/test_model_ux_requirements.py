@@ -107,6 +107,16 @@ ctx-size = 4096
                 for snippet in snippets:
                     self.assertIn(snippet, combined)
 
+    def test_deprecated_add_entry_is_not_in_primary_help_but_still_available(self):
+        help_result = self.run_modelctl("-h")
+        self.assertEqual(help_result.returncode, 0, help_result.stderr + help_result.stdout)
+        self.assertNotIn("add-entry", help_result.stdout)
+
+        legacy_help = self.run_modelctl("add-entry", "-h")
+        self.assertEqual(legacy_help.returncode, 0, legacy_help.stderr + legacy_help.stdout)
+        self.assertIn("deprecated", (legacy_help.stdout + legacy_help.stderr).lower())
+        self.assertIn("modelctl add", legacy_help.stdout + legacy_help.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
