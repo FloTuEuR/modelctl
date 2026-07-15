@@ -9,7 +9,7 @@ Completed loops:
 - Loop 8 — port-centric `tail` example reconciled with real configured behavior.
 - Loop 9 — unsupported restart examples removed from monitor/read-only guidance.
 - Loop 10 — tail mapping discovery added to setup/doctor guidance.
-- Loop 11 — router systemd wrappers for logs/status/restart/reset-failed/start.
+- Loop 11 — router systemd wrappers for log-follow/status/restart/reset-failed/start.
 
 Loop 6 result:
 `[monitor] backend = file` with `log_file = ...` can show recent lines and `modelctl monitor router --follow` streams appended lines until interrupted.

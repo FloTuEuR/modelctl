@@ -62,7 +62,7 @@ Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Tail mapping setup/doctor guidance is complete; router systemd wrappers now cover logs/status/restart/reset-failed/start for configured services.
+- Tail mapping setup/doctor guidance is complete; router systemd wrappers now cover log-follow/status/restart/reset-failed/start for configured services.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
@@ -120,7 +120,7 @@ Phase: router management
 Scope: medium
 
 Implemented:
-- `modelctl router logs TARGET --follow` wraps `journalctl -u <service> -f`.
+- `modelctl router logs TARGET` wraps `journalctl -u <service> -f`.
 - `modelctl router restart TARGET` wraps `sudo systemctl restart <service>`.
 - `modelctl router reset-failed TARGET` wraps `sudo systemctl reset-failed <service>`.
 - `modelctl router start TARGET` wraps `sudo systemctl start <service>`.

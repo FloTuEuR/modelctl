@@ -63,7 +63,8 @@ class RouterCommandTests(unittest.TestCase):
         result = self.run_modelctl("router", "-h")
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("router logs cuda --follow", result.stdout)
+        self.assertIn("router logs cuda", result.stdout)
+        self.assertNotIn("router logs cuda --follow", result.stdout)
         self.assertIn("router restart vulkan", result.stdout)
         self.assertIn("router reset-failed cuda", result.stdout)
         self.assertIn("router start cpu", result.stdout)
@@ -83,11 +84,17 @@ class RouterCommandTests(unittest.TestCase):
             self.assertEqual(payload["data"]["backend"], "systemd")
             self.assertEqual(payload["data"]["systemctl_state"], "active")
 
-            command = self.run_modelctl("--config", str(config), "router", "command", "logs", "8080", "--follow", "--json", env=env)
+            command = self.run_modelctl("--config", str(config), "router", "command", "logs", "8080", "--json", env=env)
             self.assertEqual(command.returncode, 0, command.stderr + command.stdout)
             payload = json.loads(command.stdout)
             self.assertEqual(payload["data"]["command"], ["journalctl", "-u", "llama-cuda.service", "-f"])
             self.assertTrue(payload["data"]["read_only"])
+
+            recent = self.run_modelctl("--config", str(config), "router", "logs", "cuda", "--no-follow", "--lines", "12", "--json", env=env)
+            self.assertEqual(recent.returncode, 0, recent.stderr + recent.stdout)
+            payload = json.loads(recent.stdout)
+            self.assertEqual(payload["data"]["command"], ["journalctl", "-u", "llama-cuda.service", "-n", "12", "--no-pager", "-o", "cat"])
+            self.assertFalse(payload["data"]["follow"])
 
     def test_router_logs_and_lifecycle_wrap_expected_commands(self):
         with tempfile.TemporaryDirectory() as td:
@@ -95,7 +102,7 @@ class RouterCommandTests(unittest.TestCase):
             bin_dir, log = self.fake_bin(td)
             env = {"PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
 
-            logs = self.run_modelctl("--config", str(config), "router", "logs", "vulkan", "--follow", env=env)
+            logs = self.run_modelctl("--config", str(config), "router", "logs", "vulkan", env=env)
             self.assertEqual(logs.returncode, 0, logs.stderr + logs.stdout)
             self.assertIn("journalctl -u llama-vulkan.service -f", logs.stdout)
 

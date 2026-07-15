@@ -57,9 +57,9 @@ modelctl tail 8080
 For the common local services, use router wrappers instead of remembering raw commands:
 
 ```bash
-modelctl router logs cuda --follow
-modelctl router logs vulkan --follow
-modelctl router logs cpu --follow
+modelctl router logs cuda
+modelctl router logs vulkan
+modelctl router logs cpu
 ```
 
 These are equivalent to:

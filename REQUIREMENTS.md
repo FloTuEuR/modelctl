@@ -130,7 +130,7 @@ restore, recover, monitor, tail, router, rules
 
 See [`docs/backlog.md`](docs/backlog.md). As of this update:
 
-- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, setup/doctor tail guidance, and router service wrappers for logs/status/restart/reset-failed/start.
+- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, setup/doctor tail guidance, and router service wrappers for log-follow/status/restart/reset-failed/start.
 - Partially complete: monitor discovery; optional process-list discovery and non-file/non-systemd backends remain undecided.
 - Next high-value slices: richer monitor backends, recommendation/classification pipeline, and source metadata/download workflows.
 

@@ -21,9 +21,9 @@ An explicit `*.service` name can also be passed when needed.
 ## Log wrappers
 
 ```bash
-modelctl router logs cuda --follow
-modelctl router logs vulkan --follow
-modelctl router logs cpu --follow
+modelctl router logs cuda
+modelctl router logs vulkan
+modelctl router logs cpu
 ```
 
 These wrap:
@@ -34,7 +34,7 @@ journalctl -u llama-vulkan.service -f
 journalctl -u llama-cpu.service -f
 ```
 
-Without `--follow`, `--lines N` shows recent lines through `journalctl -n N --no-pager -o cat`.
+Use rare-case `--no-follow --lines N` to show recent lines through `journalctl -n N --no-pager -o cat` instead of following live.
 
 ## Lifecycle wrappers
 
@@ -64,7 +64,7 @@ Use `--dry-run` to print the command without executing it. Use `--no-sudo` only 
 
 ```bash
 modelctl router status cuda
-modelctl router command logs cuda --follow
+modelctl router command logs cuda
 modelctl router command restart vulkan
 modelctl router services
 ```

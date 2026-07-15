@@ -90,9 +90,9 @@ Monitor and tail commands are read-only; service restarts are intentionally not 
 Use router wrappers for the common local llama.cpp systemd services so you do not need to remember raw commands:
 
 ```bash
-modelctl router logs cuda --follow
-modelctl router logs vulkan --follow
-modelctl router logs cpu --follow
+modelctl router logs cuda
+modelctl router logs vulkan
+modelctl router logs cpu
 modelctl router restart cuda
 modelctl router reset-failed cuda
 modelctl router start cuda

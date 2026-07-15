@@ -344,13 +344,13 @@ This command is read-only and delegates to the configured systemd service log. I
 ROUTER_HELP = """Wrap configured llama.cpp router services so operators do not need to remember journalctl/systemctl commands.
 
 Examples:
-  modelctl router logs cuda --follow
+  modelctl router logs cuda
     Run: journalctl -u llama-cuda.service -f
 
-  modelctl router logs vulkan --follow
+  modelctl router logs vulkan
     Run: journalctl -u llama-vulkan.service -f
 
-  modelctl router logs cpu --follow
+  modelctl router logs cpu
     Run: journalctl -u llama-cpu.service -f
 
   modelctl router restart cuda
@@ -2417,7 +2417,7 @@ def _router_unknown_target(target: str, services: dict[str, str], *, as_json: bo
         "suggested_commands": [
             "modelctl doctor",
             "modelctl router status cuda",
-            "modelctl router logs cuda --follow",
+            "modelctl router logs cuda",
         ],
     }
     message = f"unknown router service target: {target}"
@@ -2511,7 +2511,8 @@ def _cmd_router_command(args: argparse.Namespace, config: configparser.ConfigPar
     if service is None:
         return _router_unknown_target(target, services, as_json=as_json)
     sudo = not bool(getattr(args, "no_sudo", False))
-    cmd = _router_command_for(action, service, follow=bool(getattr(args, "follow", False)), lines=int(getattr(args, "lines", 80)), sudo=sudo)
+    follow = action == "logs" and not bool(getattr(args, "no_follow", False))
+    cmd = _router_command_for(action, service, follow=follow, lines=int(getattr(args, "lines", 80)), sudo=sudo)
     payload = {
         "action": action,
         "target": target,
@@ -2538,7 +2539,7 @@ def _cmd_router_logs(args: argparse.Namespace, config: configparser.ConfigParser
     service, services = _resolve_router_service(config, target)
     if service is None:
         return _router_unknown_target(target, services, as_json=as_json)
-    follow = bool(getattr(args, "follow", False))
+    follow = not bool(getattr(args, "no_follow", False))
     lines = int(getattr(args, "lines", 80))
     cmd = _router_command_for("logs", service, follow=follow, lines=lines)
     payload = {"action": "logs", "target": target, "service": service, "backend": "systemd", "command": cmd, "read_only": True, "follow": follow, "lines": lines}
@@ -2730,10 +2731,10 @@ def build_parser() -> argparse.ArgumentParser:
     router_status = router_sub.add_parser("status", help="Show systemd status for a configured router service")
     router_status.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, 8082, or an explicit .service name")
     router_status.add_argument("--json", action="store_true", help="Print machine-readable output")
-    router_logs = router_sub.add_parser("logs", help="Show or follow journal logs for a configured router service")
+    router_logs = router_sub.add_parser("logs", help="Follow journal logs for a configured router service")
     router_logs.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
-    router_logs.add_argument("--follow", "-f", action="store_true", help="Follow logs live, equivalent to journalctl -u SERVICE -f")
-    router_logs.add_argument("--lines", type=int, default=80, help="Show N recent lines when not following")
+    router_logs.add_argument("--no-follow", action="store_true", help="Rare: show recent lines instead of following live")
+    router_logs.add_argument("--lines", type=int, default=80, help="Rare: show N recent lines with --no-follow")
     router_logs.add_argument("--json", action="store_true", help="Print command metadata instead of running journalctl")
     for action_name in ("restart", "reset-failed", "start"):
         action_parser = router_sub.add_parser(action_name, help=f"Run sudo systemctl {action_name} for a configured router service")
@@ -2744,8 +2745,8 @@ def build_parser() -> argparse.ArgumentParser:
     router_command = router_sub.add_parser("command", help="Show the wrapped journalctl/systemctl command")
     router_command.add_argument("action", choices=["logs", "status", "restart", "reset-failed", "start"], help="Wrapped action to show")
     router_command.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
-    router_command.add_argument("--follow", "-f", action="store_true", help="Show journalctl follow command for logs")
-    router_command.add_argument("--lines", type=int, default=80, help="Show N recent lines for non-follow logs command")
+    router_command.add_argument("--no-follow", action="store_true", help="Rare: show recent-lines journalctl command for logs")
+    router_command.add_argument("--lines", type=int, default=80, help="Rare: show N recent lines with --no-follow")
     router_command.add_argument("--no-sudo", action="store_true", help="Show systemctl directly instead of sudo systemctl")
     router_command.add_argument("--json", action="store_true", help="Print machine-readable output")
 
