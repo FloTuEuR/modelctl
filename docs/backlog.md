@@ -62,8 +62,7 @@ Remaining future work:
 - Decide whether safe process-list discovery is worth adding.
 - If process-list discovery is added, it must remain read-only and must not guess
   service names, log paths, or persistent endpoint selections.
-- Tail mapping setup/doctor guidance is complete; next loop should leave the
-  monitor slice and start read-only router status/command support.
+- Tail mapping setup/doctor guidance is complete; router systemd wrappers now cover logs/status/restart/reset-failed/start for configured services.
 
 Acceptance criteria for the remaining follow-up:
 - If process-list discovery is ever added, tests cover none, one, and multiple
@@ -76,7 +75,7 @@ Acceptance criteria for the remaining follow-up:
   scanning.
 - Tail examples are reconciled with real explicit mapping behavior.
 - Restart examples are reconciled with monitor read-only safety rules.
-- Next slice should implement read-only `router status` / `router command` before any reload/restart action.
+- Next slice should avoid expanding router lifecycle further unless the action is explicitly configured and tested.
 
 ---
 
@@ -114,6 +113,26 @@ Potential future extension:
 - `--alias-state enabled|disabled|all` could replace `--enabled`/`--disabled`
 
 
+### B-004 - Router systemd service wrappers
+
+Status: completed
+Phase: router management
+Scope: medium
+
+Implemented:
+- `modelctl router logs TARGET --follow` wraps `journalctl -u <service> -f`.
+- `modelctl router restart TARGET` wraps `sudo systemctl restart <service>`.
+- `modelctl router reset-failed TARGET` wraps `sudo systemctl reset-failed <service>`.
+- `modelctl router start TARGET` wraps `sudo systemctl start <service>`.
+- `modelctl router status`, `router command`, and `router services` expose read-only status/metadata.
+- Targets resolve from `[router.services]`, `[monitor.ports]`, and built-in cuda/vulkan/cpu defaults.
+- Tests cover help, JSON metadata, lifecycle command wrapping, and unknown-target failures.
+
+Future work:
+- Add more lifecycle actions only when backed by explicit configured metadata and tests.
+- Keep monitor read-only; lifecycle actions stay under router.
+
+---
 
 ## Related operational references
 

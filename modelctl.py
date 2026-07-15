@@ -261,7 +261,7 @@ Examples:
   modelctl benchmark alias:my-model --prompt-set smoke
 """
 
-RULES_HELP = """Show the outcome rules used to judge model/settings recommendations.
+RULES_HELP = """Show the outcome rules used to judge model/settings recommendation outcomes.
 
 Default outcome targets include 20+ t/s, 65.5k context as good, 128k+ context as ideal, full VRAM fit, good output quality, and large JSON robustness.
 
@@ -339,6 +339,36 @@ Config example:
   8080 = llama-cuda.service
 
 This command is read-only and delegates to the configured systemd service log. It does not scan ports, guess services, or restart anything.
+"""
+
+ROUTER_HELP = """Wrap configured llama.cpp router services so operators do not need to remember journalctl/systemctl commands.
+
+Examples:
+  modelctl router logs cuda --follow
+    Run: journalctl -u llama-cuda.service -f
+
+  modelctl router logs vulkan --follow
+    Run: journalctl -u llama-vulkan.service -f
+
+  modelctl router logs cpu --follow
+    Run: journalctl -u llama-cpu.service -f
+
+  modelctl router restart cuda
+    Run: sudo systemctl restart llama-cuda.service
+
+  modelctl router restart vulkan
+    Run: sudo systemctl restart llama-vulkan.service
+
+  modelctl router reset-failed cuda
+    Run: sudo systemctl reset-failed llama-cuda.service
+
+  modelctl router start cuda
+    Run: sudo systemctl start llama-cuda.service
+
+  modelctl router start cpu
+    Run: sudo systemctl start llama-cpu.service
+
+Configured targets come from [router.services] and [monitor.ports]. Defaults are cuda/8080, vulkan/8081, and cpu/8082.
 """
 
 
@@ -2345,6 +2375,214 @@ def cmd_rules(args: argparse.Namespace, config: configparser.ConfigParser) -> in
     return 0
 
 
+ROUTER_DEFAULT_SERVICES = {
+    "cuda": "llama-cuda.service",
+    "8080": "llama-cuda.service",
+    "vulkan": "llama-vulkan.service",
+    "8081": "llama-vulkan.service",
+    "cpu": "llama-cpu.service",
+    "8082": "llama-cpu.service",
+}
+
+
+def _router_service_map(config: configparser.ConfigParser) -> dict[str, str]:
+    services = dict(ROUTER_DEFAULT_SERVICES)
+    if config.has_section("router.services"):
+        for name, service in config.items("router.services"):
+            service = service.strip()
+            if service:
+                services[name.strip().lower()] = service
+    if config.has_section("monitor.ports"):
+        for port, service in config.items("monitor.ports"):
+            service = service.strip()
+            if service:
+                services[port.strip().lower()] = service
+    return services
+
+
+def _resolve_router_service(config: configparser.ConfigParser, target: str) -> tuple[str | None, dict[str, str]]:
+    services = _router_service_map(config)
+    key = str(target or "").strip().lower()
+    if key in services:
+        return services[key], services
+    if key.endswith(".service"):
+        return key, services
+    return None, services
+
+
+def _router_unknown_target(target: str, services: dict[str, str], *, as_json: bool = False) -> int:
+    payload = {
+        "target": target,
+        "configured_targets": dict(sorted(services.items())),
+        "suggested_commands": [
+            "modelctl doctor",
+            "modelctl router status cuda",
+            "modelctl router logs cuda --follow",
+        ],
+    }
+    message = f"unknown router service target: {target}"
+    if as_json:
+        _print_json(_json_envelope("router", payload, status="error", error={"code": "unknown_router_service", "message": message}))
+    else:
+        print(message, file=sys.stderr)
+        print("configured targets:", file=sys.stderr)
+        for name, service in sorted(services.items()):
+            print(f"  {name} -> {service}", file=sys.stderr)
+    return 2
+
+
+def _print_or_json_router(command: str, payload: dict[str, Any], *, as_json: bool, status: str = "ok", code: int = 0) -> int:
+    if as_json:
+        _print_json(_json_envelope(command, payload, status=status, error=None if code == 0 else {"code": "router_failed", "message": str(payload.get("error") or "router command failed")}))
+    return code
+
+
+def _router_command_for(action: str, service: str, *, follow: bool = False, lines: int = 80, sudo: bool = True) -> list[str]:
+    if action == "logs":
+        if follow:
+            return ["journalctl", "-u", service, "-f"]
+        return ["journalctl", "-u", service, "-n", str(lines), "--no-pager", "-o", "cat"]
+    if action == "status":
+        return ["systemctl", "is-active", service]
+    if action in {"restart", "reset-failed", "start"}:
+        base = ["systemctl", action, service]
+        return ["sudo", *base] if sudo else base
+    raise ValueError(f"unsupported router action: {action}")
+
+
+def cmd_router(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    action = getattr(args, "router_command", "")
+    as_json = bool(getattr(args, "json", False))
+    if action == "services":
+        services = _router_service_map(config)
+        payload = {"services": dict(sorted(services.items()))}
+        if as_json:
+            return _print_or_json_router("router", payload, as_json=True)
+        print("Configured router service targets:")
+        for name, service in sorted(services.items()):
+            print(f"  {name} -> {service}")
+        return 0
+    if action == "command":
+        return _cmd_router_command(args, config)
+    if action == "status":
+        return _cmd_router_status(args, config)
+    if action == "logs":
+        return _cmd_router_logs(args, config)
+    if action in {"restart", "reset-failed", "start"}:
+        return _cmd_router_systemctl(args, config, action)
+    print(f"Unknown router command: {action}", file=sys.stderr)
+    return 2
+
+
+def _cmd_router_status(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    target = getattr(args, "target", "cuda")
+    as_json = bool(getattr(args, "json", False))
+    service, services = _resolve_router_service(config, target)
+    if service is None:
+        return _router_unknown_target(target, services, as_json=as_json)
+    cmd = _router_command_for("status", service)
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    state = result.stdout.strip() or result.stderr.strip() or f"exit {result.returncode}"
+    payload = {
+        "target": target,
+        "service": service,
+        "backend": "systemd",
+        "read_only": True,
+        "command": cmd,
+        "systemctl_state": state,
+        "returncode": result.returncode,
+    }
+    if as_json:
+        return _print_or_json_router("router", payload, as_json=True, status="ok" if result.returncode == 0 else "error", code=result.returncode)
+    print("Router status")
+    print("  backend: systemd")
+    print(f"  target: {target}")
+    print(f"  service: {service}")
+    print(f"  command: {' '.join(cmd)}")
+    print(f"  state: {state}")
+    return result.returncode
+
+
+def _cmd_router_command(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    action = getattr(args, "action", None) or "logs"
+    target = getattr(args, "target", None) or "cuda"
+    as_json = bool(getattr(args, "json", False))
+    service, services = _resolve_router_service(config, target)
+    if service is None:
+        return _router_unknown_target(target, services, as_json=as_json)
+    sudo = not bool(getattr(args, "no_sudo", False))
+    cmd = _router_command_for(action, service, follow=bool(getattr(args, "follow", False)), lines=int(getattr(args, "lines", 80)), sudo=sudo)
+    payload = {
+        "action": action,
+        "target": target,
+        "service": service,
+        "backend": "systemd",
+        "command": cmd,
+        "read_only": action in {"logs", "status"},
+        "mutates_service_state": action in {"restart", "reset-failed", "start"},
+    }
+    if as_json:
+        return _print_or_json_router("router", payload, as_json=True)
+    print("Router command")
+    print(f"  target: {target}")
+    print(f"  service: {service}")
+    print(f"  command: {' '.join(cmd)}")
+    if payload["mutates_service_state"]:
+        print("  note: this command mutates systemd service state when executed")
+    return 0
+
+
+def _cmd_router_logs(args: argparse.Namespace, config: configparser.ConfigParser) -> int:
+    target = getattr(args, "target", "cuda")
+    as_json = bool(getattr(args, "json", False))
+    service, services = _resolve_router_service(config, target)
+    if service is None:
+        return _router_unknown_target(target, services, as_json=as_json)
+    follow = bool(getattr(args, "follow", False))
+    lines = int(getattr(args, "lines", 80))
+    cmd = _router_command_for("logs", service, follow=follow, lines=lines)
+    payload = {"action": "logs", "target": target, "service": service, "backend": "systemd", "command": cmd, "read_only": True, "follow": follow, "lines": lines}
+    if as_json:
+        return _print_or_json_router("router", payload, as_json=True)
+    print("Router logs")
+    print(f"  service: {service}")
+    print(f"  command: {' '.join(cmd)}")
+    return subprocess.call(cmd)
+
+
+def _cmd_router_systemctl(args: argparse.Namespace, config: configparser.ConfigParser, action: str) -> int:
+    target = getattr(args, "target", "cuda")
+    as_json = bool(getattr(args, "json", False))
+    service, services = _resolve_router_service(config, target)
+    if service is None:
+        return _router_unknown_target(target, services, as_json=as_json)
+    sudo = not bool(getattr(args, "no_sudo", False))
+    cmd = _router_command_for(action, service, sudo=sudo)
+    payload = {"action": action, "target": target, "service": service, "backend": "systemd", "command": cmd, "read_only": False, "mutates_service_state": True, "dry_run": bool(getattr(args, "dry_run", False))}
+    if getattr(args, "dry_run", False):
+        if as_json:
+            return _print_or_json_router("router", payload, as_json=True)
+        print("Router systemd action dry run")
+        print(f"  command: {' '.join(cmd)}")
+        return 0
+    result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    payload["returncode"] = result.returncode
+    payload["stdout"] = result.stdout.splitlines()
+    payload["stderr"] = result.stderr.splitlines()
+    if as_json:
+        return _print_or_json_router("router", payload, as_json=True, status="ok" if result.returncode == 0 else "error", code=result.returncode)
+    print("Router systemd action")
+    print(f"  action: {action}")
+    print(f"  service: {service}")
+    print(f"  command: {' '.join(cmd)}")
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Portable safe-by-default llama.cpp router ini model manager",
@@ -2483,7 +2721,33 @@ def build_parser() -> argparse.ArgumentParser:
     tail = sub.add_parser("tail", help="Follow configured logs for a local llama server port", description="Follow read-only configured logs for a local llama server port.", epilog=TAIL_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     tail.add_argument("port", metavar="PORT", help="Local llama server port mapped in [monitor.ports], e.g. 8080")
     tail.add_argument("--lines", type=int, default=80, help="Show N recent log lines before following")
-    sub.add_parser("rules", help="Show model outcome rules", description="Show the outcomes used to judge model/settings recommendations.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub.add_parser("rules", help="Show recommendation outcome rules", description="Show the outcome rules used to judge model/settings recommendation outcomes.", epilog=RULES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    router = sub.add_parser("router", help="Wrap configured llama.cpp router systemd services", description="Wrap configured llama.cpp router service logs and lifecycle commands.", epilog=ROUTER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    router_sub = router.add_subparsers(dest="router_command", required=True)
+    router_services = router_sub.add_parser("services", help="List configured router service targets")
+    router_services.add_argument("--json", action="store_true", help="Print machine-readable output")
+    router_status = router_sub.add_parser("status", help="Show systemd status for a configured router service")
+    router_status.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, 8082, or an explicit .service name")
+    router_status.add_argument("--json", action="store_true", help="Print machine-readable output")
+    router_logs = router_sub.add_parser("logs", help="Show or follow journal logs for a configured router service")
+    router_logs.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
+    router_logs.add_argument("--follow", "-f", action="store_true", help="Follow logs live, equivalent to journalctl -u SERVICE -f")
+    router_logs.add_argument("--lines", type=int, default=80, help="Show N recent lines when not following")
+    router_logs.add_argument("--json", action="store_true", help="Print command metadata instead of running journalctl")
+    for action_name in ("restart", "reset-failed", "start"):
+        action_parser = router_sub.add_parser(action_name, help=f"Run sudo systemctl {action_name} for a configured router service")
+        action_parser.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
+        action_parser.add_argument("--dry-run", action="store_true", help="Print the systemctl command without executing it")
+        action_parser.add_argument("--no-sudo", action="store_true", help="Run systemctl directly instead of through sudo")
+        action_parser.add_argument("--json", action="store_true", help="Print machine-readable output")
+    router_command = router_sub.add_parser("command", help="Show the wrapped journalctl/systemctl command")
+    router_command.add_argument("action", choices=["logs", "status", "restart", "reset-failed", "start"], help="Wrapped action to show")
+    router_command.add_argument("target", nargs="?", default="cuda", help="Service target such as cuda, vulkan, cpu, 8080, 8081, or 8082")
+    router_command.add_argument("--follow", "-f", action="store_true", help="Show journalctl follow command for logs")
+    router_command.add_argument("--lines", type=int, default=80, help="Show N recent lines for non-follow logs command")
+    router_command.add_argument("--no-sudo", action="store_true", help="Show systemctl directly instead of sudo systemctl")
+    router_command.add_argument("--json", action="store_true", help="Print machine-readable output")
 
     return parser
 
@@ -2531,6 +2795,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_tail(args, config)
     if args.command == "rules":
         return cmd_rules(args, config)
+    if args.command == "router":
+        return cmd_router(args, config)
     parser.error(f"Unhandled command: {args.command}")
     return 2
 

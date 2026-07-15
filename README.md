@@ -85,6 +85,21 @@ Monitor and tail commands are read-only; service restarts are intentionally not 
 
 `modelctl monitor discover` stays read-only. It reports each discovered server, shows the current model when it can be determined safely, and otherwise reports `current model: unknown`. JSON output keeps the full model ID list for automation. With `[monitor] backend = file` and `log_file = ...`, `modelctl monitor router --follow` prints the current tail and streams appended log lines without mutating router/server state. With `[monitor] backend = systemd` and `service = llama-cuda.service`, it delegates to a journalctl-style read-only service log follow. `modelctl tail 8080` is real when `[monitor.ports] 8080 = llama-cuda.service` is configured. See [`docs/phase-6-monitor-discovery.md`](docs/phase-6-monitor-discovery.md).
 
+## Router service wrappers
+
+Use router wrappers for the common local llama.cpp systemd services so you do not need to remember raw commands:
+
+```bash
+modelctl router logs cuda --follow
+modelctl router logs vulkan --follow
+modelctl router logs cpu --follow
+modelctl router restart cuda
+modelctl router reset-failed cuda
+modelctl router start cuda
+```
+
+These map to configured/default systemd services such as `llama-cuda.service`, `llama-vulkan.service`, and `llama-cpu.service`. See [`docs/router-configuration.md`](docs/router-configuration.md).
+
 ## Roadmap and recommendation rules
 
 Model acquisition and tuning features are still only partially implemented in v0.1. See [`docs/roadmap.md`](docs/roadmap.md) for what is still planned versus what now works.

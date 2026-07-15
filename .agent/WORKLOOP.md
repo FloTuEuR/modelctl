@@ -9,6 +9,7 @@ Completed loops:
 - Loop 8 — port-centric `tail` example reconciled with real configured behavior.
 - Loop 9 — unsupported restart examples removed from monitor/read-only guidance.
 - Loop 10 — tail mapping discovery added to setup/doctor guidance.
+- Loop 11 — router systemd wrappers for logs/status/restart/reset-failed/start.
 
 Loop 6 result:
 `[monitor] backend = file` with `log_file = ...` can show recent lines and `modelctl monitor router --follow` streams appended lines until interrupted.
@@ -24,6 +25,9 @@ Monitor/discovery help no longer suggests unsupported `modelctl restart 8080`; r
 
 Loop 10 result:
 `modelctl setup` and `modelctl doctor` now show the explicit `[monitor.ports] 8080 = llama-cuda.service` mapping needed for `modelctl tail 8080`; doctor also reports configured mappings without mutating config.
+
+Loop 11 result:
+`modelctl router` now wraps configured/default systemd service commands for the common local llama.cpp services: logs/status/command are read-oriented, while restart/reset-failed/start explicitly call the corresponding `sudo systemctl ... <service>` action.
 
 Files changed across these loops:
 - modelctl.py
@@ -51,21 +55,17 @@ Validation run:
 - `git diff --check`
 
 Next loop:
-Loop 11 — read-only router status/command surface.
+Loop 12 — choose between richer monitor backends, recommendation/classification, or source metadata/downloads.
 
-Loop 11 recommended slice:
-1. Implement the smallest first-class `router` parser surface for read-only commands only: `modelctl router status` and `modelctl router command`.
-2. `router status` should report configured router ini, endpoint/monitor metadata if present, and fail clearly when status cannot be determined; it must not restart/reload/kill anything.
-3. `router command` should show configured launch guidance from modelctl-owned metadata where available; if metadata is missing, fail clearly and point to setup/doctor guidance.
-4. Do not implement `router reload`, `router restart`, service guessing, process guessing, or broad discovery in this loop.
-5. Add focused tests and update docs/backlog/requirements so files remain the source of truth.
+Loop 12 recommended slice:
+1. Pick exactly one roadmap area and keep it bounded/test-first.
+2. If extending router lifecycle further, require explicit configured metadata and tests; do not scan or guess arbitrary services/processes.
+3. Keep docs/examples synchronized with implemented behavior.
 
-Loop 11 acceptance criteria:
-- `modelctl router status` and `modelctl router command` are discoverable in help
-- both commands are read-only and backend/config driven
-- unsupported/missing metadata fails clearly with actionable guidance
-- no parser/help surface advertises implemented reload/restart behavior yet
+Loop 12 acceptance criteria:
+- only implemented commands are advertised
+- tests cover every new command path
 - GitHub/local/remote checkout are synced after commit/push
 
 Blocker:
-None for Loop 11 planning. Keep router management separate from monitor/tail and implement read-only status/command before any reload/restart work.
+None. The router wrapper slice should be treated as complete once verification is green.

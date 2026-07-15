@@ -30,7 +30,7 @@ The current CLI exposes:
 ```text
 setup, import, doctor, list, show, aliases, delete, archive,
 update-check, enable, disable, add, add-entry, benchmark, scan,
-restore, recover, monitor, tail, rules
+restore, recover, monitor, tail, router, rules
 ```
 
 `add-entry` is retained only as a deprecated compatibility alias for `add`.
@@ -68,6 +68,7 @@ restore, recover, monitor, tail, rules
 - Port-centric `tail` for explicitly configured `[monitor.ports]` service mappings.
 - Clear monitor guidance when no monitor backend is configured, including `modelctl monitor discover` as the suggested next command.
 - Setup/doctor guidance for explicit tail mappings without guessing service names.
+- Router service wrappers for configured/common systemd services: `router logs`, `router status`, `router command`, `router restart`, `router reset-failed`, and `router start`.
 - Documentation for safety, JSON output, lifecycle operations, settings rules, release readiness, roadmap, and backlog.
 
 ## Features still to build
@@ -81,9 +82,9 @@ restore, recover, monitor, tail, rules
 
 ### Router management
 
-- Add first-class read-only `router status` / `router command` support first.
-- Add configured `router reload` and `router restart` actions later, only where safe and explicitly requested.
-- Keep router actions backend-driven rather than guessing service names or process IDs.
+- Extend router wrappers only from configured/default service metadata.
+- Add further lifecycle actions later only where safe and explicitly requested.
+- Keep router actions backend-driven rather than guessing arbitrary service names or process IDs.
 
 ### Monitoring
 
@@ -129,9 +130,9 @@ restore, recover, monitor, tail, rules
 
 See [`docs/backlog.md`](docs/backlog.md). As of this update:
 
-- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, and setup/doctor tail guidance.
-- Partially complete: monitor discovery; only optional process-list discovery and non-file/non-systemd backends remain undecided.
-- Next high-value slice: read-only router status/command from configured metadata. Defer reload/restart until status/command is proven.
+- Completed: missing-target help UX, list filters, monitor unconfigured guidance, file/systemd monitor follow, explicit `tail` mapping, setup/doctor tail guidance, and router service wrappers for logs/status/restart/reset-failed/start.
+- Partially complete: monitor discovery; optional process-list discovery and non-file/non-systemd backends remain undecided.
+- Next high-value slices: richer monitor backends, recommendation/classification pipeline, and source metadata/download workflows.
 
 ## Verification baseline
 
